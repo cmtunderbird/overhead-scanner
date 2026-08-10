@@ -6,6 +6,19 @@ build-backend = "setuptools.build_meta"
 name = "overhead-scanner"
 version = "1.0.0"
 description = "DIY overhead document scanner -- twin Sony A6000, dual Raspberry Pi 5"
+readme = "README.md"
+license = {file = "LICENSE"}
+authors = [{name = "Catalin Muntean"}]
+keywords = ["book-scanner", "document-scanner", "photogrammetry", "opencv",
+            "camera-calibration", "mtf", "iso12233", "gphoto2", "raspberry-pi"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Multimedia :: Graphics :: Capture :: Scanners",
+  "Topic :: Scientific/Engineering :: Image Processing",
+]
 requires-python = ">=3.10"
 dependencies = [
   "numpy>=1.24",
@@ -17,6 +30,11 @@ dependencies = [
   "pydantic>=2.5",
   "requests>=2.31",
 ]
+
+[project.urls]
+Homepage = "https://github.com/cmtunderbird/overhead-scanner"
+Documentation = "https://github.com/cmtunderbird/overhead-scanner/tree/main/docs"
+Issues = "https://github.com/cmtunderbird/overhead-scanner/issues"
 
 [project.optional-dependencies]
 camera = ["gphoto2>=2.5"]
