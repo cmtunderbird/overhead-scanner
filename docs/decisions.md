@@ -3,9 +3,65 @@
 Why the project is shaped the way it is. Each entry states the decision, the
 reasoning, and — where it applies — what would change it.
 
+**D16 reverses part of D1 and supersedes D3–D5 for bound material.** The
+superseded entries are kept rather than edited, because how a project reached a
+wrong conclusion is worth more than a clean record.
+
+---
+
+## D16. The rig is stereoscopic, not a tiling rig
+
+**Decision:** the two cameras both cover the whole spread, so the page's 3-D
+surface can be measured and flattened. Tiling becomes a second mode for flat
+material.
+
+**This reverses the effective design of D1–D5.** Those entries treated the twin
+bodies as a way to get 462 DPI across a plane, with stereo relegated to a 20 mm
+strip "held in reserve". With 20 mm of overlap out of 420, **95 % of the spread
+is seen by one camera only** — there is no depth to recover, and no dewarping
+is possible. Stereoscopic operation is not an extension of that geometry; it
+replaces it.
+
+### Why the earlier rejection was wrong
+
+Addendum C measured an OAK-D Lite (~1250 µm) and an OAK-D Pro (~370 µm) against
+a 50 µm budget and concluded "dropping stereo is an upgrade". Correct about
+that hardware; wrong as a general claim. Two A6000s at a 300 mm baseline give
+**32 µm** — the sensors and the standoff were never the problem, the depth
+cameras were.
+
+### The structural result that forces the choice
+
+| Coverage | Overlap | DPI | Stereo cover | Baseline | δz |
+|---|---|---|---|---|---|
+| tile | 20 mm | 462 | 5 % | 200 mm | 27 µm |
+| tile | 200 mm | 342 | 48 % | 110 mm | 85 µm |
+| tile | 300 mm | 342 | 71 % | 60 mm | **157 µm** |
+| **stereo** | full | 342 | **100 %** | 200 mm | **47 µm** |
+
+Depth precision gets *worse* as coverage improves, then recovers abruptly.
+**When tiling, the baseline is the tile separation — it is not yours to
+choose.** Widen the tiles for overlap and the cameras converge, collapsing the
+baseline. Only full overlap frees it. There is no useful middle ground.
+
+### What it costs and what it buys
+
+342 DPI instead of 462 — below the CZUR's 441, and the honest price of
+measuring the page rather than assuming it. Against that: depth everywhere,
+a working distance that nearly doubles depth of field to ±20.5 mm, and residual
+distortion of **0.08 px** where a homography leaves **8.74 px**.
+
+Routes back to the resolution: fusing the two dewarped views (mechanism built,
+recovery unmeasured), or four cameras as two stereo pairs (~462 DPI *and* full
+stereo).
+
+**What would change this:** nothing about the geometry. If the material is
+genuinely flat, use tile mode — that is why both exist.
+
 ---
 
 ## D1. Twin Sony A6000 rather than a depth camera
+*Conclusion stands; the reasoning about stereo is superseded by D16.*
 
 **Decision:** two 24 MP APS-C bodies, not a Luxonis OAK.
 
@@ -60,6 +116,9 @@ it correctly flips to landscape for a single camera. Derivation in
 ---
 
 ## D3. A platen, not 3D dewarping
+*Superseded by D16 for bound material. The platen is now optional: it is used
+for flat material and omitted for books, where curvature is measured instead of
+suppressed. What follows was the reasoning while the rig was plane-based.*
 
 **Decision:** flatten the page with 3 mm acrylic and skip surface reconstruction
 entirely.
@@ -83,6 +142,8 @@ fallbacks are characterised and ready — the free overlap stereo band at 27 µm
 ---
 
 ## D4. Overlap the tiles by 20 mm
+*Applies to tile mode only. In stereo mode the overlap is total and the
+baseline is an independent parameter — see D16.*
 
 **Decision:** 20 mm of overlap across the gutter, costing ~2 % of DPI.
 
@@ -98,6 +159,9 @@ above 40 mm the DPI falls below the CZUR's 441.
 ---
 
 ## D5. Fixed calibrated homography, not feature-based stitching
+*Applies to tile mode only. A homography is a plane-to-plane map and cannot
+correct a page that is not a plane; stereo mode resamples against a measured
+surface instead — see D16.*
 
 **Decision:** the join is solved once at calibration and never recomputed.
 
@@ -254,6 +318,47 @@ change took a spread from 10.1 s to 1.5 s.
 The deliberate exception is `rectify_to_document`, which uses `INTER_LANCZOS4`
 (3× slower than cubic). It is the one resampling step that touches every pixel of
 the master, and sharpness there is the product.
+
+---
+
+## D17. Plane sweep over page columns, not SGBM
+
+**Decision:** recover the surface by sweeping candidate heights and correlating
+whole page columns between the two views, rather than block-matching a
+rectified pair and fitting a surface to the point cloud.
+
+Generic stereo discards the strongest fact available: the page is developable
+with generators parallel to the spine, so **every pixel in a column at platen x
+sits at the same height**. Sweeping collapses hundreds of rows of evidence into
+one number per `(x, height)`, which is what makes it survive a page whose
+margins have no texture at all.
+
+**Confidence is peak sharpness, not peak height.** The first implementation
+gated on the correlation peak's *value* and produced a confidently wrong
+surface at a mean NCC of 0.949. Every textured column was already correct to
+~0.2 mm; the failures were the dark gutter and the blank margins, which still
+scored 0.85–0.95 because **two smooth gradients correlate beautifully at any
+assumed depth**. A textured column peaks over ~1.5 mm; a blank one is flat
+across the entire 50 mm search range.
+
+**What would change this:** needing a surface that varies along y — cockling, a
+dog-eared corner. The column sweep cannot represent that and would become the
+initial estimate for a 2-D method rather than the answer.
+
+---
+
+## D18. The platen is now optional
+
+**Decision:** the platen is used for flat material and omitted for books.
+
+In v1.0 it was load-bearing — it made the page flat so the homography was
+valid. That is exactly what fails on a thick binding, which physically cannot
+lie flat near the spine and should not be forced to. In stereo mode curvature
+is measured, so the platen's only remaining job is convenience.
+
+Foreshortening remains unsolvable by anyone: as a page tilts to angle θ,
+sampling density falls by cos θ, and no algorithm recovers information that was
+never sampled. Measuring the surface fixes the *geometry*, not the *sampling*.
 
 ---
 

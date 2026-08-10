@@ -9,6 +9,11 @@ undistort ─► flat-field ─► colour ─► rectify ─► stitch
           ─► deskew ─► crop ─► normalise ─► split
 ```
 
+> **This is the tile-mode pipeline**, and it assumes the document is a plane.
+> For bound books the rig runs in stereo mode, where `rectify_to_document` is
+> replaced by surface recovery and flattening — see [`stereo.md`](stereo.md).
+> That path currently lives beside this module rather than inside it.
+
 **The order is not arbitrary.** Three constraints fix it:
 
 - **Undistort first**, because everything downstream assumes a pinhole camera.
@@ -293,9 +298,9 @@ PTP is about 2 s per camera, which is why `standard` is a single frame.
 written before either runs. They belong in Phase 5–6, downstream of this module,
 reading masters from disk.
 
-**Content-based dewarping.** With a platen the page is flat. The hooks exist —
-the overlap stereo band is already characterised at 27 µm — but adding a warp
-stage that does nothing is how pipelines rot.
+**Stereo dewarping.** Implemented, but in `scanner/stereo/` rather than here.
+Wiring it in as a mode of `process_spread` — surface recovery replacing
+rectification — is the next structural change.
 
 **RAW decoding.** Frames are read as 8-bit BGR. A real RAW path belongs before
 `correct_frame` and would need 16-bit colour LUTs; see

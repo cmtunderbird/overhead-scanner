@@ -88,9 +88,12 @@ depends on the lens never moving again.
 2. Set **f/8**. Not f/11 — the Airy disc is already 2.75 px at f/8, and
    stopping further buys depth of field you do not need behind a platen
    while costing resolution you paid for.
-3. Focus manually on a sheet at the working height (**~453 mm** lens to
-   paper for A3 two-camera; **~434 mm** for A4 single-camera). Use focus
-   magnification and the fine print on your test page.
+3. Focus manually on a sheet at the working height. **Which distance depends on
+   the mode you are building toward:** ~434 mm for A4 single-camera, ~453 mm
+   for A3 tiling, **~601 mm for A3 stereo**. With one body in hand, A4 at
+   434 mm is the useful configuration; check with
+   `python -m scanner geometry -n 1 -f A4`. Use focus magnification and the
+   fine print on your test page.
 4. **Tape the zoom ring and the focus ring.** Gaffer tape, not masking.
    Two millimetres of zoom creep invalidates the intrinsics, the
    homography and the DPI simultaneously, and you will not notice until

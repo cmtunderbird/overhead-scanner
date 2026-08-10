@@ -1,7 +1,16 @@
 # Optics
 
-The complete optical model, with derivations. Everything in this document is
-implemented in [`scanner/geometry.py`](../scanner/geometry.py) and asserted in
+The complete optical model, with derivations.
+
+> **Two coverage modes.** This document derives the *tiling* geometry in
+> detail, because it is the simpler case and every formula carries over. For
+> the stereo geometry the rig actually uses on bound books — full overlap,
+> free baseline, 342 DPI, 47 µm depth — see [`stereo.md`](stereo.md) and
+> [`blueprint-v1.1.md`](blueprint-v1.1.md). The single change is that the
+> baseline stops being determined by the tiling.
+
+Everything in this document is implemented in
+[`scanner/geometry.py`](../scanner/geometry.py) and asserted in
 [`tests/test_geometry.py`](../tests/test_geometry.py) — the numbers here are
 printed by the code, not transcribed from a notebook.
 
@@ -185,10 +194,13 @@ not need behind a platen and costs resolution you bought the sensor for.
 
 ---
 
-## 8. Free stereo across the gutter
+## 8. Stereo across the gutter (tile mode)
 
-The overlap band exists for blending, but the two cameras looking into it from
-200 mm apart also form a stereo pair — positioned, conveniently, exactly over
+> In **stereo mode** this is not a band but the whole page, and the baseline is
+> a free parameter rather than the tile separation. See [`stereo.md`](stereo.md).
+
+In tile mode the overlap band exists for blending, but the two cameras looking
+into it from 200 mm apart also form a stereo pair — positioned, conveniently, exactly over
 the spine where page curvature is worst.
 
 ```
@@ -200,9 +212,9 @@ the spine where page curvature is worst.
 with `δu = 0.2 px` sub-pixel disparity accuracy. That is laser-triangulation
 precision, for free, from hardware that has to be there anyway.
 
-It is **not currently used** — the platen makes the page flat, so there is
-nothing to measure. It is held in reserve as a dewarping input if the platen
-ever proves impractical (fragile bindings, oversized volumes).
+In tile mode it covers only 5 % of the page, which is why tile mode cannot
+dewarp: a 20 mm strip tells you the height at the spine and nothing about the
+rest of the sheet. That limitation is what stereo mode exists to remove.
 
 The same overlap gives something more immediately useful: **real-pixel finger
 and glare removal**. An obstruction in one camera's overlap region is simply

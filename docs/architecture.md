@@ -37,13 +37,16 @@ have shipped broken software.
 ┌───────┴────────┐  ┌────────┴────────┐  ┌────────┴────────┐
 │  synth/        │  │  calib/         │  │  node/          │
 │  ground truth  │  │  measurement    │  │  acquisition    │
-│  generators    │  │  of a real rig  │  │                 │
+│  page+surface  │  │  of a real rig  │  │                 │
 └───────┬────────┘  └────────┬────────┘  └────────┬────────┘
         │                    │                    │
         │           ┌────────▼────────┐  ┌────────▼────────┐
-        │           │  pipeline/      │  │  orchestrator/  │
-        │           │  raw → master   │  │  session driver │
-        │           └────────┬────────┘  └─────────────────┘
+        │           │  stereo/        │  │  orchestrator/  │
+        │           │  surface+dewarp │  │  session driver │
+        │           ├─────────────────┤  └─────────────────┘
+        │           │  pipeline/      │
+        │           │  raw → master   │
+        │           └────────┬────────┘
         │                    │
         │           ┌────────▼────────┐
         └──────────►│  metrics/       │
@@ -74,6 +77,11 @@ Key responsibility that is easy to miss: **choosing the sensor orientation**.
 See [`optics.md` §3](optics.md#3-sensor-orientation--the-decisive-choice).
 
 ### `scanner/synth/`
+
+`surface.py` models the page as a developable surface (height field, arc
+length, wrap/unwrap); `render3d.py` photographs it by ray-surface intersection
+from an arbitrary camera pose, returning true height and true paper coordinate
+per pixel — the answer key a dewarper is graded against.
 
 `page.py` renders documents in **millimetre space** and returns a `PageTruth`
 recording where the slanted edges, colour patches, fiducials, ruler ends and
@@ -109,6 +117,19 @@ than a 3×3 matrix.
 `stages.py` holds each operation as an independently testable function;
 `run.py` sequences them and produces a `SpreadResult` with a timing and
 diagnostics report. See [`pipeline.md`](pipeline.md).
+
+### `scanner/stereo/`
+
+Recovers the page surface from a stereo pair and flattens it.
+
+| Module | Does |
+|---|---|
+| `sweep.py` | Plane-sweep surface recovery: correlate whole page columns between the views across candidate heights |
+| `dewarp.py` | Resample the flat page from the measured surface; fuse views by obliquity; report paper-coordinate error |
+
+Depends on `synth/surface.py` for the developable model — the same class
+describes a simulated book and a measured one, which is what lets a recovered
+surface be substituted for the true one in a test and compared directly.
 
 ### `scanner/metrics/`
 
@@ -155,7 +176,13 @@ Super-resolution and OCR are derivatives. They never feed back into the master.
 Nothing above `CameraBackend` may know whether it is talking to a simulation or
 a Sony. The only difference is one environment variable.
 
-**6. Reduced-scale rendering must not change the field of view.**
+**6. Paper coordinates are arc length, not projection.**
+A curved page is longer than its shadow. `s` (arc length from the spine) is
+where a glyph was printed; `x` is where its shadow falls on the platen. Any
+code that conflates them has silently assumed the page is flat — which is
+exactly the assumption a homography encodes.
+
+**7. Reduced-scale rendering must not change the field of view.**
 `scale` in the simulator shrinks pixel counts and rescales pixel-valued defects
 (`CameraDefects.scaled()`), leaving geometry identical. Tests run at 1/6 scale
 and exercise exactly the same code paths.

@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 Orientation = Literal["auto", "portrait", "landscape"]
+Coverage = Literal["tile", "stereo"]
 
 # Circle of confusion for depth-of-field, in pixels.
 #
@@ -124,6 +125,16 @@ class RigGeometry:
     document: DocumentFormat = A3
     n_cameras: int = 2
     overlap_mm: float = 20.0
+    #: "tile"   -- each camera takes a slice; maximum resolution, no depth.
+    #: "stereo" -- every camera sees the whole document; the baseline stops
+    #:             being tied to the tiling and becomes a free parameter,
+    #:             which is what makes 3-D page recovery possible.
+    coverage: Coverage = "tile"
+    #: Camera separation in stereo coverage, mm. Ignored when tiling.
+    stereo_baseline_mm: float = 200.0
+    #: Extra field kept beyond the document, as a fraction, for convergence
+    #: and for a page that is never laid down square.
+    stereo_margin: float = 0.012
     orientation: Orientation = "auto"
     coc_px: float = DEFAULT_COC_PX
     # Sub-pixel disparity accuracy assumed for the stereo estimate.
@@ -134,35 +145,77 @@ class RigGeometry:
             raise ValueError("n_cameras must be >= 1")
         if self.overlap_mm < 0:
             raise ValueError("overlap_mm must be >= 0")
-        if self.n_cameras > 1 and self.tile_width_mm >= self.document.long_mm:
+        if self.coverage == "stereo":
+            if self.n_cameras < 2:
+                raise ValueError("stereo coverage needs at least 2 cameras")
+            if self.stereo_baseline_mm <= 0:
+                raise ValueError("stereo_baseline_mm must be > 0")
+        elif self.n_cameras > 1 and self.tile_width_mm >= self.document.long_mm:
             raise ValueError("overlap too large: tiles would not reduce the field")
 
     # -- tiling ------------------------------------------------------------
 
     @property
+    def is_stereo(self) -> bool:
+        return self.coverage == "stereo" and self.n_cameras >= 2
+
+    @property
     def tile_width_mm(self) -> float:
         """
-        Width of one camera's tile along the split axis.
+        Width of one camera's share of the document along the split axis.
 
-        n tiles of width w, overlapping by `overlap` at each of the n-1
-        internal joins, must span the document:
-            n*w - (n-1)*overlap = L
+        Tiling: n tiles of width w overlapping by `overlap` at each of the
+        n-1 internal joins must span the document, so
+            n*w - (n-1)*overlap = L.
+
+        Stereo: every camera covers the whole thing, plus a margin.
         """
+        if self.coverage == "stereo":
+            return self.document.long_mm * (1.0 + self.stereo_margin)
         n = self.n_cameras
         return (self.document.long_mm + (n - 1) * self.overlap_mm) / n
 
     @property
     def tiles(self) -> list[Tile]:
+        if self.coverage == "stereo":
+            return [Tile(i, 0.0, self.document.long_mm) for i in range(self.n_cameras)]
         w = self.tile_width_mm
         step = w - self.overlap_mm if self.n_cameras > 1 else 0.0
         return [Tile(i, i * step, i * step + w) for i in range(self.n_cameras)]
 
     @property
     def baseline_mm(self) -> float:
-        """Separation between adjacent camera optical axes."""
+        """
+        Separation between adjacent camera optical axes.
+
+        When tiling this is *forced* by the tile spacing -- widening the
+        overlap to gain stereo coverage drags the cameras together and
+        destroys the depth precision you were trying to buy.  In stereo
+        coverage it is yours to choose.
+        """
         if self.n_cameras < 2:
             return 0.0
+        if self.coverage == "stereo":
+            return self.stereo_baseline_mm
         return self.tiles[1].centre_mm - self.tiles[0].centre_mm
+
+    @property
+    def stereo_coverage_fraction(self) -> float:
+        """Fraction of the document seen by at least two cameras."""
+        if self.n_cameras < 2:
+            return 0.0
+        if self.coverage == "stereo":
+            return 1.0
+        return min(1.0, self.overlap_mm / self.document.long_mm)
+
+    @property
+    def convergence_deg(self) -> float:
+        """Angle between the two cameras' optical axes, degrees."""
+        if self.n_cameras < 2 or self.baseline_mm == 0:
+            return 0.0
+        return 2.0 * math.degrees(
+            math.atan(self.baseline_mm / 2.0 / self.working_distance_mm)
+        )
 
     # -- orientation solve -------------------------------------------------
 
@@ -327,7 +380,10 @@ class RigGeometry:
             "document": self.document.name,
             "orientation": self.resolved_orientation,
             "binding_axis": self.binding_axis,
+            "coverage": self.coverage,
             "overlap_mm": round(self.overlap_mm, 2),
+            "stereo_coverage_pct": round(100 * self.stereo_coverage_fraction, 1),
+            "convergence_deg": round(self.convergence_deg, 1),
             "tile_width_mm": round(self.tile_width_mm, 2),
             "baseline_mm": round(self.baseline_mm, 2),
             "dpi": round(self.dpi, 1),
@@ -374,7 +430,11 @@ class RigGeometry:
             + ("   <-- diffraction limited" if s["diffraction_limited"] else ""),
         ]
         if s["stereo_dz_um"] is not None:
-            lines.append(f"  stereo dz          {s['stereo_dz_um']:g} um")
+            lines.append(
+                f"  stereo dz          {s['stereo_dz_um']:g} um "
+                f"over {s['stereo_coverage_pct']:g} % of the page"
+                + (f", convergence {s['convergence_deg']:g} deg" if self.is_stereo else "")
+            )
         return "\n".join(lines)
 
 
@@ -390,6 +450,11 @@ SINGLE_CAMERA_A3 = RigGeometry(n_cameras=1, document=A3)
 
 #: Single body on A4 -- comfortably past the CZUR, today, with one camera.
 SINGLE_CAMERA_A4 = RigGeometry(n_cameras=1, document=A4)
+
+#: Full-overlap stereo: both bodies see the whole spread, so the page
+#: surface can be recovered and flattened.  Costs resolution, buys 3-D.
+STEREO_A3 = RigGeometry(n_cameras=2, coverage="stereo", stereo_baseline_mm=200.0,
+                        document=A3)
 
 
 def compare(configs: dict[str, RigGeometry]) -> str:

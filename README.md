@@ -1,26 +1,31 @@
-# Overhead Document Scanner
+# Stereoscopic Overhead Document Scanner
 
-**A DIY overhead book scanner that beats the commercial machine it was designed against — twin Sony A6000 bodies, dual Raspberry Pi 5 nodes, ~462 DPI and 41 megapixels per A3 spread in a single simultaneous exposure, with no moving parts.**
+**A DIY overhead book scanner that measures the page in three dimensions and flattens it computationally.** Twin Sony A6000 bodies, dual Raspberry Pi 5 nodes, no moving parts, no laser projector — the two cameras *are* the depth sensor.
 
-The benchmark is the [CZUR ET Ultra](https://www.scannx.com/products/overhead-scanners/czur-et-ultra): 441 DPI, 39.8 MP per spread, ~€600. This build clears both figures, and every part of it is open, measurable and reconfigurable.
+A thick book cannot be pressed flat near its spine, and a homography cannot correct a page that is not a plane. Two cameras that both see the whole spread can measure the surface and resample the paper back to flat:
+
+| | Residual geometric distortion |
+|---|---|
+| **Stereo dewarp** | **0.08 px** median, 0.36 max |
+| Page assumed flat (homography) | 8.74 px median, 25.4 max |
+
+*Simulated 60 mm hardback, 30 mm spine rise. ~110× less distortion — 19 µm in physical units.*
+
+The commercial benchmark, the [CZUR ET Ultra](https://www.scannx.com/products/overhead-scanners/czur-et-ultra), projects **three** laser lines and interpolates between them. Dense stereo gives a depth estimate everywhere there is ink.
 
 ```
-2 x Sony A6000 (IMX) @ 30 mm f/8  ->  A3 spread
+2 x Sony A6000 @ 30 mm f/8  ->  A3 spread, full overlap (stereo mode)
 ------------------------------------------------------------------
-  orientation        portrait  (limited by the short sensor axis)
-  overlap            20 mm
-  tile width         220 mm
-  baseline           200 mm
-
-  RESOLUTION         461.8 DPI   (7636 x 5400 px, 41.23 MP)
-
-  magnification      0.07091
-  working distance   453.1 mm
-  field (other axis) 331.4 mm (34.4 mm spare)
-  depth of field     22.86 mm (+/-11.4 mm)
-  Airy disc          2.75 px   <-- diffraction limited
-  stereo dz          26.7 um
+  orientation        landscape  (limited by the short sensor axis)
+  RESOLUTION         342.1 DPI   (5657 x 4000 px, 22.63 MP per camera)
+  working distance   601.2 mm
+  baseline           200 mm       convergence 18.9 deg
+  depth of field     40.95 mm (+/-20.5 mm)
+  Airy disc          2.75 px      <-- diffraction limited
+  depth precision    47 um over 100 % of the page
 ```
+
+A second **tiling** mode trades the depth for resolution — 462 DPI and 41 MP across an A3 spread — for loose sheets and thin material that a platen genuinely does flatten.
 
 ---
 
@@ -47,7 +52,7 @@ The benchmark is the [CZUR ET Ultra](https://www.scannx.com/products/overhead-sc
 
 | Phase | Gate | State |
 |---|---|---|
-| **0** | Full pipeline running against sample images | ✅ **Done** — 17/17 acceptance checks, 89 tests |
+| **0** | Full pipeline running against sample images | ✅ **Done** — 17/17 acceptance checks, 106 tests |
 | **1** | One Pi + one camera, `/capture` + `/files` end to end | 🟡 Software complete and tested against a simulated body; awaiting hardware |
 | **2** | Frame, rail, lamps, platen; both nodes live | ⬜ Not started — nothing physical exists yet |
 | **3** | Full calibration; seam invisible, ΔE < 2 between bodies | 🟡 Code complete and proven synthetically; needs real photons |
@@ -61,10 +66,26 @@ See [`docs/status.md`](docs/status.md) for the honest, itemised version — incl
 
 ## What it does
 
-Photographs an open book from above with two cameras, each covering one half of the spread with a deliberate overlap across the gutter, and turns the pair into a single colour-managed, geometrically correct archival master.
+Photographs an open book from above with two cameras and turns the pair into a single colour-managed, geometrically correct archival master.
 
-- **No moving parts.** Both halves are exposed simultaneously. There is no scanning head, no rotary arm, no motorised mast.
-- **No feature-based stitching.** The join is a fixed homography solved once at calibration, in millimetres. It does not wander from page to page.
+**The two cameras exist to see the page in 3-D.** In stereo mode both cover the whole spread, so the page's surface can be measured and unrolled — which is what makes a thick, tightly-bound book scannable without pressing it flat and risking the binding.
+
+It runs in two configurations, and the choice is a real trade rather than a setting:
+
+| | **Tiling** | **Stereo** |
+|---|---|---|
+| Each camera covers | half the spread | the whole spread |
+| Resolution | **462 DPI**, 41 MP | 342 DPI, 22.6 MP |
+| Depth coverage | 5 % (the overlap strip) | **100 %** |
+| Depth of field | ±11.4 mm | **±20.5 mm** |
+| Curved pages | assumed flat | **measured and flattened** |
+| Good for | loose sheets, thin books, a platen | thick books that cannot be pressed flat |
+
+**Stereo mode measures the page's 3-D shape and flattens it computationally** — the thing a homography structurally cannot do, because it is a plane-to-plane map and a thick book's page is not a plane. On a 60 mm hardback that is the difference between 8.74 px of residual distortion and **0.08 px**. See [`docs/stereo.md`](docs/stereo.md).
+
+- **The cameras are the depth sensor.** No laser projector, no structured light, no time-of-flight module. Dense passive stereo across the whole page, constrained by the fact that paper bends but does not stretch.
+- **No moving parts.** Both views are exposed simultaneously. There is no scanning head, no rotary arm, no motorised mast.
+- **The platen is optional.** In stereo mode curvature is measured rather than suppressed, so a fragile binding never has to be pressed.
 - **Everything is measured, not asserted.** DPI, sharpness, seam registration and colour difference are all computed by code in this repository, using the same functions on synthetic and real images.
 - **Reconfigurable.** Change the document format, the camera count or the overlap and the optical model re-solves the whole geometry — including which way up to hold the sensor.
 
@@ -222,6 +243,7 @@ Design point **20–30 mm**. Below 10 mm the band is too narrow to blend reliabl
 | Document | What is in it |
 |---|---|
 | [`docs/status.md`](docs/status.md) | Exactly what is built, what is not, and what is next |
+| [`docs/stereo.md`](docs/stereo.md) | **Stereoscopic page flattening** — the 3-D surface recovery this rig exists for |
 | [`docs/optics.md`](docs/optics.md) | The complete optical model, with derivations and the orientation argument |
 | [`docs/architecture.md`](docs/architecture.md) | Module-by-module design, invariants, extension points |
 | [`docs/calibration.md`](docs/calibration.md) | The full calibration procedure, diagnostics and failure modes |
@@ -232,8 +254,9 @@ Design point **20–30 mm**. Below 10 mm the band is too narrow to blend reliabl
 | [`docs/decisions.md`](docs/decisions.md) | Decision record — why twin A6000, why not an OAK, why a platen |
 | [`docs/troubleshooting.md`](docs/troubleshooting.md) | Real failure modes and their fixes |
 | [`docs/day-one.md`](docs/day-one.md) | Step-by-step for the morning the camera arrives |
-| [`docs/blueprint-v1.0.md`](docs/blueprint-v1.0.md) | The build specification of record |
-| [`docs/scanner-blueprint.html`](docs/scanner-blueprint.html) | Dimensioned drawing set — plan, elevations, architecture, pipeline (open in a browser) |
+| [`docs/blueprint-v1.1.md`](docs/blueprint-v1.1.md) | **The build specification of record** — stereo-first |
+| [`docs/blueprint-v1.0.md`](docs/blueprint-v1.0.md) | The previous tiling specification, kept for the record |
+| [`docs/scanner-blueprint.html`](docs/scanner-blueprint.html) | Dimensioned drawing set for the tiling geometry (open in a browser) |
 
 ---
 
@@ -246,7 +269,9 @@ scanner/
 ├── cli.py                 command line interface
 ├── synth/
 │   ├── page.py            synthetic documents in mm space, carrying ground truth
-│   └── camera.py          camera simulator: distortion, vignette, colour, noise
+│   ├── camera.py          camera simulator: distortion, vignette, colour, noise
+│   ├── surface.py         developable book surface + arc-length unwrap
+│   └── render3d.py        ray-traced curved-page renderer with ground-truth depth
 ├── calib/
 │   ├── intrinsics.py      ChArUco detection and camera calibration
 │   ├── align.py           document homography + human-readable mounting error
@@ -259,6 +284,9 @@ scanner/
 │   ├── sfr.py             ISO 12233 slanted-edge MTF
 │   ├── colour.py          sRGB↔Lab, CIEDE2000, chart and cross-camera ΔE
 │   └── scale.py           measured DPI and stitch-seam error
+├── stereo/
+│   ├── sweep.py           plane-sweep surface recovery from a stereo pair
+│   └── dewarp.py          flattening, view fusion, paper-coordinate error
 ├── node/
 │   ├── server.py          FastAPI camera node
 │   └── backends/          base · mock · gphoto2  (interchangeable by design)
@@ -313,7 +341,7 @@ Full details in [`docs/api.md`](docs/api.md).
 ## Testing
 
 ```bash
-python -m pytest -q          # 89 tests, ~55 s
+python -m pytest -q          # 106 tests, ~65 s
 ```
 
 These are not smoke tests:
@@ -324,6 +352,7 @@ These are not smoke tests:
 - **`test_node_api.py`** exercises the node over real HTTP, including a deliberately dropped PTP session that must be recovered transparently.
 - **`test_orchestrator.py`** runs two live uvicorn servers on real sockets and drives them through a session.
 - **`test_end_to_end.py`** calibrates a two-camera rig from scratch out of simulated captures and confirms the **measured** DPI matches the optical model to within 1 %.
+- **`test_stereo.py`** renders a curved book, recovers its surface from a stereo pair, flattens it, and asserts the residual distortion is more than 5× smaller than assuming the page is flat.
 
 ---
 
@@ -345,8 +374,10 @@ Four findings from the build, each now locked down by a test so it cannot come b
 
 **Next, before the hardware:**
 
-- `scanner calibrate` CLI subcommand wrapping the existing library calls — currently calibration requires a short script
-- `scanner align` subcommand for the document homography step
+- **Real stereo calibration** — relative pose between the two bodies is currently assumed, not solved. Required before any real stereo capture.
+- Wire the stereo path into `pipeline/run.py` rather than alongside it
+- Measure whether fusing the two dewarped views recovers resolution
+- `scanner calibrate` / `scanner align` CLI subcommands — calibration currently requires a short script
 
 **When the camera arrives** — follow [`docs/day-one.md`](docs/day-one.md):
 

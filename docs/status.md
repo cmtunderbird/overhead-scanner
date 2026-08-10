@@ -47,7 +47,18 @@ from the camera simulator. `python -m scanner selftest` reproduces all of it.
 | Calibration persistence | Byte-identical round trip |
 | Throughput | 1.5 s per spread (was 10.1 s) |
 
-**89 tests, ~55 s. 17/17 acceptance checks.**
+**106 tests, ~65 s. 17/17 acceptance checks.**
+
+### Stereoscopic page flattening (new)
+
+| Capability | Verified to |
+|---|---|
+| Developable book surface + arc-length unwrap | exact round trip |
+| Ray-traced curved-page renderer with ground truth | height map exact to 1e-3 mm |
+| Plane-sweep surface recovery | spine rise 30.50 vs 30.00 mm true |
+| Recovered paper coordinate | **71 µm rms** |
+| Residual distortion after flattening | **0.08 px** vs 8.74 px assuming flat |
+| Stereo geometry mode | baseline free of the tiling |
 
 ---
 
@@ -80,6 +91,16 @@ No super-resolution, no live QA on the Hailo accelerators. Design work is done
 (see [`decisions.md` D12](decisions.md#d12-2-super-resolution-not-4)): 2× rather
 than 4×, tiled at 512–1024 px because activation memory, not output size, is the
 binding constraint on 8 GB of VRAM.
+
+### Stereo path, not yet finished
+
+- **Real stereo calibration.** Relative pose between the two bodies is
+  assumed, not solved. A `stereoCalibrate` path is the next piece.
+- **Not wired into `pipeline/run.py`.** The stereo path exists alongside
+  the tiling pipeline, not inside it.
+- **View fusion is unmeasured.** The mechanism exists; whether fusing two
+  dewarped views recovers resolution is an open question.
+- **Surface model is h(x) only** — no cockling, no dog-eared corners.
 
 ### Other known gaps
 

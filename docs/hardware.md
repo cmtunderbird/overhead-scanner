@@ -36,13 +36,17 @@ laptop with the camera plugged straight in.
 
 From `python -m scanner geometry` for the configuration you intend to shoot:
 
-| | 2 cameras, A3 | 1 camera, A4 |
-|---|---|---|
-| Working distance (lens principal plane → page) | **453 mm** | **434 mm** |
-| Camera baseline | 200 mm | — |
-| Tile width | 220 mm | 297 mm |
-| Depth of field at f/8 | ±11.4 mm | ±10.4 mm |
-| Resolution | 461.8 DPI | 483.8 DPI |
+| | **Stereo, A3** | Tile, A3 | 1 camera, A4 |
+|---|---|---|---|
+| Working distance (lens principal plane → page) | **601 mm** | 453 mm | 434 mm |
+| Camera baseline | **200–300 mm, free** | 200 mm, forced | — |
+| Mounting | **converged ~19°** | parallel, toe-in 0° | — |
+| Each camera covers | **the whole spread** | 220 mm tile | 297 mm |
+| Depth of field at f/8 | **±20.5 mm** | ±11.4 mm | ±10.4 mm |
+| Resolution | 342.1 DPI | 461.8 DPI | 483.8 DPI |
+
+**The mast must reach 601 mm**, not just 453 — stereo mode needs the longer
+standoff so both cameras can cover the whole spread. Build for the taller one.
 
 Mixing up the two working distances is easy and produces a measured DPI that
 disagrees with the model — see [`troubleshooting.md`](troubleshooting.md).
@@ -94,9 +98,11 @@ stitching homography valid between sessions. A frame that flexes turns a
 calibrated seam into a wandering one, and no adaptive stitching fixes that
 properly.
 
-- **Cross rail with adjustable baseline and toe-in.** Cameras parallel and
-  vertical for documents — toe-in 0°. The adjustability costs €40–80 now and is
-  the only element that would be genuinely expensive to retrofit.
+- **Cross rail with adjustable baseline and toe-in.** Toe-in is **required**,
+  not optional: in stereo mode both cameras must be converged on the page
+  centre. Parallel mounting would need a field almost twice the page width and
+  would throw away most of the sensor. Tile mode uses toe-in 0°. This is the
+  one element that would be genuinely expensive to retrofit.
 - Mount so the sensor's **short axis runs across the split** (portrait for the
   two-camera A3 configuration) — this is worth 462 DPI instead of 342.
 - Verify with `mounting_error()` after alignment: it reports offset in
@@ -124,11 +130,15 @@ removed.
 
 ---
 
-## The platen
+## The platen — now optional
 
-3 mm acrylic or glass over the page. It does two jobs at once: keeps every page
-inside the ±11 mm depth-of-field band, and removes the need for 3D dewarping
-entirely. Highest-leverage €15 in the build.
+3 mm acrylic or glass over the page. In **tile mode** it is load-bearing: it
+makes the page flat, which is what makes the homography valid.
+
+In **stereo mode it is optional**, and for a thick or fragile binding it should
+be left off — the curvature is measured instead of suppressed, which is the
+entire reason the rig is stereoscopic. Use it for loose sheets and thin
+material, where it is still the cheapest way to gain sharpness.
 
 What it does not fix, and nothing can: **foreshortening near an unflattened
 spine.** As the page tilts to angle θ, sampling density falls by cos θ — at 80°
