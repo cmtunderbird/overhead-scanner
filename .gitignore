@@ -17,3 +17,5 @@ calibration/
 *.ARW
 *.npz
 debug/
+
+.pytest-tmp/

@@ -309,7 +309,7 @@ scanner/
     ├── server.py          the operator interface: proxy + state
     └── static/index.html  the whole UI, one file, no build step
 
-tests/                     130 tests
+tests/                     135 tests
 docs/                      the documentation above
 ```
 
@@ -362,7 +362,7 @@ Full details in [`docs/api.md`](docs/api.md).
 ## Testing
 
 ```bash
-python -m pytest -q          # 130 tests, ~105 s
+python -m pytest -q          # 135 tests, ~100 s
 ```
 
 These are not smoke tests:

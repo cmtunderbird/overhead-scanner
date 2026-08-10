@@ -197,13 +197,48 @@ worse than no tick. Raise `--scale`.
 
 ### The test suite is slow
 
-It runs at `scale = 0.16` and takes ~55 s. Most of that is the end-to-end and
+It runs at `scale = 0.16` and takes ~105 s. Most of that is the end-to-end and
 orchestrator tests, which spin real uvicorn servers. Run a single file while
 iterating:
 
 ```bash
 python -m pytest tests/test_sfr.py -q
 ```
+
+### `RuntimeError: no TrueType fonts available for page synthesis`
+
+**Fixed** — but if you are on an older checkout, this is what a Windows or
+macOS machine hits the first time it runs `scanner gui --mock` or the
+selftest. Font lookup searched `/usr/share/fonts` only, so a laptop that
+ships Arial rather than Liberation Sans had, as far as the renderer was
+concerned, no fonts at all.
+
+It is worth being clear about what it was *not*: it had nothing to do with
+missing cameras or nodes. Only the **mock** backend draws synthetic pages, so
+the failure appeared on every `/preview`, `/stream` and `/focus` call and
+looked like a camera problem.
+
+Font resolution now indexes the platform's font directories, accepts
+metric-compatible substitutes (Arial, Times, Courier, DejaVu, Noto, Free\*),
+and falls back to Pillow's built-in face rather than raising. Nothing
+*measured* on a synthetic page is drawn with a font — the slanted edges,
+colour patches, fiducials and ruler are all geometry — so a substitute face
+changes the texture and never the ground truth. `git pull`.
+
+### On Windows: `PermissionError: [WinError 5] Access is denied` in dozens of tests
+
+Look at *where* it is denied. If the path is
+`%LOCALAPPDATA%\Temp\pytest-of-<user>`, this is not the test suite — pytest
+cannot create its temp root, so every test taking a `tmp_path` fails **at
+setup**. It usually means that directory was created once by an elevated
+process and your normal user can no longer write to it.
+
+```powershell
+python -m pytest -q --basetemp=.pytest-tmp
+```
+
+Or delete `%LOCALAPPDATA%\Temp\pytest-of-<user>` from an administrator
+prompt. Nothing in the codebase is involved either way.
 
 ### `cv2.aruco has no attribute 'interpolateCornersCharuco'`
 

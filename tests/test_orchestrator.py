@@ -7,6 +7,7 @@ that will run tomorrow -- not a mocked-out transport.
 import socket
 import threading
 import time
+from pathlib import Path
 
 import pytest
 import uvicorn
@@ -95,8 +96,11 @@ def test_capture_pairs_frames_by_sequence_not_time(rig_nodes, tmp_path):
     for r in recs:
         assert r.complete, r.errors
         assert set(r.files) == {"cam0", "cam1"}
-        # both halves of a spread land in the same numbered directory
-        dirs = {p.rsplit("/", 2)[-2] for paths in r.files.values() for p in paths}
+        # Both halves of a spread land in the same numbered directory.
+        # Path(), not rsplit("/") -- the session writes with os.path, so on
+        # Windows these come back with backslashes and the split silently
+        # measures nothing.
+        dirs = {Path(p).parent.name for paths in r.files.values() for p in paths}
         assert dirs == {f"{r.seq:05d}"}
 
 

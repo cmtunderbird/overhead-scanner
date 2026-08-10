@@ -49,7 +49,7 @@ from the camera simulator. `python -m scanner selftest` reproduces all of it.
 | Focus scoring | Monotonic in blur; localises a soft corner to that corner |
 | Operator interface | 24 tests against live mock nodes over loopback |
 
-**130 tests, ~105 s. 17/17 acceptance checks.**
+**135 tests, ~100 s. 17/17 acceptance checks.**
 
 ### The operator interface (new)
 

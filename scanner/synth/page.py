@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import glob
 import math
+import os
 from functools import lru_cache
 from dataclasses import dataclass, field
 
@@ -35,20 +36,81 @@ _SERIF = "LiberationSerif-Regular"
 _SANS = "LiberationSans-Regular"
 _MONO = "LiberationMono-Regular"
 
+#: Where fonts live, per platform.  Windows and macOS matter because the
+#: node runs the mock camera on whatever laptop is driving the rig, not
+#: only on the Linux Pis.
+_FONT_DIRS = (
+    "/usr/share/fonts",                                  # Linux
+    "/usr/local/share/fonts",
+    os.path.expanduser("~/.fonts"),
+    os.path.expanduser("~/.local/share/fonts"),
+    os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts"),   # Windows
+    os.path.expanduser("~/AppData/Local/Microsoft/Windows/Fonts"),
+    "/System/Library/Fonts",                             # macOS
+    "/Library/Fonts",
+    os.path.expanduser("~/Library/Fonts"),
+)
+
+#: Acceptable faces per role, most preferred first.  Nothing that is
+#: *measured* on a synthetic page is drawn with a font -- the slanted
+#: edges, colour patches, fiducials and ruler are all geometry -- so a
+#: substitute face changes the texture, not the ground truth.
+_ALIASES = {
+    _SERIF: (_SERIF, "DejaVuSerif", "NotoSerif-Regular", "FreeSerif",
+             "times", "Times New Roman", "Georgia"),
+    _SANS: (_SANS, "DejaVuSans", "NotoSans-Regular", "FreeSans",
+            "arial", "Arial", "segoeui", "Helvetica"),
+    _MONO: (_MONO, "DejaVuSansMono", "NotoSansMono-Regular", "FreeMono",
+            "cour", "Courier New", "consola", "Menlo"),
+}
+
+
+@lru_cache(maxsize=1)
+def _installed_fonts() -> dict[str, str]:
+    """Map lowercased stem -> path, scanning every font directory once."""
+    index: dict[str, str] = {}
+    for root in _FONT_DIRS:
+        if not os.path.isdir(root):
+            continue
+        for ext in ("ttf", "ttc", "otf"):
+            for path in glob.glob(os.path.join(root, "**", f"*.{ext}"),
+                                  recursive=True):
+                index.setdefault(os.path.splitext(os.path.basename(path))[0]
+                                 .lower(), path)
+    return index
+
 
 @lru_cache(maxsize=8)
-def _font_path(name: str) -> str:
-    hits = glob.glob(f"/usr/share/fonts/**/{name}.ttf", recursive=True)
-    if not hits:
-        hits = glob.glob("/usr/share/fonts/**/*.ttf", recursive=True)
-    if not hits:
-        raise RuntimeError("no TrueType fonts available for page synthesis")
-    return sorted(hits)[0]
+def _font_path(name: str) -> str | None:
+    """
+    Locate a usable face, or return None to fall back to Pillow's own.
+
+    Deliberately does not raise.  The synthetic page is a rehearsal aid and
+    is driven from whatever laptop is running the rig, so refusing to render
+    one because Windows ships Arial instead of Liberation Sans would be an
+    absurd reason to stop.
+    """
+    index = _installed_fonts()
+    for alias in _ALIASES.get(name, (name,)):
+        hit = index.get(alias.lower())
+        if hit:
+            return hit
+    return sorted(index.values())[0] if index else None
 
 
 @lru_cache(maxsize=64)
-def _font(name: str, px: float) -> ImageFont.FreeTypeFont:
-    return ImageFont.truetype(_font_path(name), max(4, int(round(px))))
+def _font(name: str, px: float):
+    size = max(4, int(round(px)))
+    path = _font_path(name)
+    if path is not None:
+        try:
+            return ImageFont.truetype(path, size)
+        except OSError:                      # unreadable or unsupported face
+            pass
+    try:
+        return ImageFont.load_default(size=size)     # Pillow >= 10.1
+    except TypeError:
+        return ImageFont.load_default()
 
 
 @dataclass
