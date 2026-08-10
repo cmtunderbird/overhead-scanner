@@ -362,6 +362,59 @@ never sampled. Measuring the surface fixes the *geometry*, not the *sampling*.
 
 ---
 
+## D19. Focus assist scores a real capture, not the live view
+
+**Decision:** the operator interface's focus aid takes a full-resolution frame
+through the normal capture path and scores five regions of it — it does not
+score the preview, even though the preview is free and the capture costs a
+shutter actuation.
+
+**Live view is roughly 1/35 of the sensor's pixels, and downscaling is itself a
+low-pass filter.** A preview can look perfectly sharp on a frame that is
+visibly soft at full size, because the resampling has already removed the
+frequencies that would reveal the softness. A focus score computed on it tracks
+the preview's sharpness, which is not the quantity anyone wants.
+
+**The absolute number is meaningless; the derivative is not.** Tenengrad
+normalised by image variance still depends on the page, the lighting and the
+lens. So the interface holds the per-region peak and reports the current score
+as a percentage of it: you turn the ring, the bars rise, they stop rising, you
+have found focus. Going past shows as a fall — which is the only way to know,
+and the reason peaks are held rather than recomputed.
+
+**Five regions, not one**, because a centre-sharp corner-soft frame is a lens
+verdict — and per [`day-one.md`](day-one.md) the corner MTF50 is the number
+that decides whether the kit lens stays. One central score cannot see it.
+
+**What would change this:** a body whose live view is full-sensor readout at
+native resolution, or a lens with a focus motor the node can drive, at which
+point the loop closes in software and the operator stops turning anything.
+
+---
+
+## D20. The GUI proxies the nodes rather than letting the browser reach them
+
+**Decision:** the browser talks only to the laptop; the laptop talks to the
+nodes. No client-side call ever names a node URL.
+
+Three reasons, and they are the same three that shaped the capture path:
+
+- **The camera network need not be routable from the browser.** The Pis can sit
+  on a private wired segment with only the laptop bridging to it — which is
+  what you want when the segment is carrying 24 MB per frame and you are
+  holding the throughput inequality tight.
+- **One place for timeouts and error text.** A node that has lost its PTP
+  session produces one message, in one format, whoever asked for it.
+- **It works from a phone.** `--host 0.0.0.0` and the interface is usable from
+  anything on the LAN with no client install.
+
+The cost is one extra hop for the MJPEG relay, which is bandwidth the laptop
+has. The interface is also **one HTML file with no build step, no npm and no
+CDN**: it has to work on an isolated camera network with no internet, and it
+has to still open in five years.
+
+---
+
 ## Superseded
 
 **Blueprint v0.1 / v0.2 and Addenda A–D** are retained in the project history as

@@ -21,7 +21,10 @@ import os
 import socket
 from dataclasses import asdict
 
+import time
+
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from .backends.base import CameraBackend, CameraError, CameraSettings
@@ -132,6 +135,75 @@ def create_app(camera: CameraBackend | None = None) -> FastAPI:
             return Response(content=cam_of(request).preview(), media_type="image/jpeg")
         except CameraError as e:
             raise HTTPException(status_code=503, detail=str(e)) from e
+
+    @api.get("/stream")
+    def stream(request: Request, fps: float = 4.0):
+        """
+        Live view as MJPEG.
+
+        The A6000 gives roughly 1-3 fps over PTP at about 1024x680 -- a
+        thirty-fifth of the sensor's pixels.  That is enough to frame a
+        page and nowhere near enough to judge focus, which is why
+        /focus exists separately.
+        """
+        cam = cam_of(request)
+        interval = 1.0 / max(fps, 0.2)
+
+        def frames():
+            while True:
+                t0 = time.perf_counter()
+                try:
+                    jpg = cam.preview()
+                except CameraError:
+                    break
+                yield (b"--frame\r\nContent-Type: image/jpeg\r\n"
+                       b"Content-Length: " + str(len(jpg)).encode() + b"\r\n\r\n"
+                       + jpg + b"\r\n")
+                dt = time.perf_counter() - t0
+                if dt < interval:
+                    time.sleep(interval - dt)
+
+        return StreamingResponse(
+            frames(), media_type="multipart/x-mixed-replace; boundary=frame")
+
+    @api.get("/focus")
+    def focus(request: Request):
+        """
+        Score sharpness on a real captured frame, not the preview.
+
+        Live view cannot resolve whether you are inside a +/-11 mm depth
+        of field; a full-resolution frame can.
+        """
+        import cv2
+        import numpy as np
+
+        from ..metrics.focus import exposure_stats, focus_map
+
+        cam = cam_of(request)
+        try:
+            files = cam.capture_with_retry(0, 1)
+            data = cam.read_file(files[0].file_id)
+        except CameraError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+
+        img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
+        if img is None:
+            raise HTTPException(
+                status_code=503,
+                detail="could not decode the captured frame -- if this is a RAW "
+                       "file the node needs a decoder installed")
+        regions = [{"name": r.name, "score": round(r.score, 4)}
+                   for r in focus_map(img)]
+        small = cv2.resize(img, (640, int(640 * img.shape[0] / img.shape[1])))
+        ok, buf = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, 80])
+        import base64
+        return {
+            "camera_id": cam.camera_id,
+            "size": [img.shape[1], img.shape[0]],
+            "regions": regions,
+            "exposure": exposure_stats(img),
+            "jpeg_b64": base64.b64encode(buf.tobytes()).decode() if ok else None,
+        }
 
     @api.post("/capture")
     def capture(request: Request, req: CaptureRequest):

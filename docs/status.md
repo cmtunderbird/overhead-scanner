@@ -46,8 +46,21 @@ from the camera simulator. `python -m scanner selftest` reproduces all of it.
 | Orchestrator | 8 tests against two live uvicorn servers |
 | Calibration persistence | Byte-identical round trip |
 | Throughput | 1.5 s per spread (was 10.1 s) |
+| Focus scoring | Monotonic in blur; localises a soft corner to that corner |
+| Operator interface | 24 tests against live mock nodes over loopback |
 
-**106 tests, ~65 s. 17/17 acceptance checks.**
+**130 tests, ~105 s. 17/17 acceptance checks.**
+
+### The operator interface (new)
+
+`python -m scanner gui --mock` — a browser UI on the laptop: dual live view,
+focus assist against a real full-resolution frame, capture with throughput, and
+the rig geometry recomputed live as you change it. No build step, no npm, no
+CDN; usable from a tablet on the same LAN with `--host 0.0.0.0`. See
+[`gui.md`](gui.md).
+
+It is a proxy, not a page that talks to the cameras: the browser only ever talks
+to the laptop, so the camera network need not be routable from the client.
 
 ### Stereoscopic page flattening (new)
 
@@ -75,6 +88,10 @@ than one that admits its gaps.
   the highest-value next task** — it is the friction between tomorrow morning
   and a real calibration.
 - **`scanner align`** — same, for the document homography step.
+
+Neither is reachable from the GUI yet either — the interface covers framing,
+focus and capture, which is the part you do with your hands on the rig.
+Calibration is still a script.
 
 ### Phase 5 — output. Not started.
 
@@ -152,6 +169,12 @@ final two-camera rig, not for first light.
 6. Board flat on the platen → document homography; read `mounting_error`
 7. Flat-field and colour
 8. First real page: measure MTF50 and DPI rather than guessing
+
+Steps 4 and 8 are much easier from the browser: `python -m scanner gui --node
+cam0=http://localhost:8000`, then use the **focus** tab while you turn the ring.
+It scores five regions of a real captured frame and holds the peak, so you can
+see the moment you go past focus instead of guessing from a preview that cannot
+show it.
 
 A single body on A4 gives **484 DPI**, already past the CZUR's 441 — so Phase 1
 and a genuinely usable scanner arrive at the same time.

@@ -8,6 +8,7 @@ Command line interface.
     python -m scanner capture             drive a session
     python -m scanner process             raw frames -> masters
     python -m scanner measure             MTF50 / DPI / dE on an image
+    python -m scanner gui                 the operator interface in a browser
 """
 
 from __future__ import annotations
@@ -216,13 +217,39 @@ def cmd_selftest(args) -> int:
     )
 
 
+def cmd_gui(args) -> int:
+    """Serve the operator interface."""
+    import uvicorn
+
+    from .gui.server import GuiState, create_gui, parse_node, start_mock_nodes
+
+    specs = list(args.node or [])
+    if args.mock:
+        print(f"starting {args.mock_cameras} mock camera nodes ...")
+        specs = start_mock_nodes(args.mock_cameras, scale=args.mock_scale)
+        for s in specs:
+            print(f"  {s}")
+
+    state = GuiState(
+        nodes=[parse_node(s, i) for i, s in enumerate(specs)],
+        out_dir=args.out, profile=args.profile, coverage=args.coverage,
+        overlap_mm=args.overlap, baseline_mm=args.baseline,
+        document=args.format, focal_mm=args.focal, f_number=args.aperture,
+    )
+    shown = "localhost" if args.host in ("0.0.0.0", "::") else args.host
+    print(f"\n  operator interface:  http://{shown}:{args.port}\n")
+    uvicorn.run(create_gui(state), host=args.host, port=args.port,
+                log_level=args.log_level)
+    return 0
+
+
 # --------------------------------------------------------------------------
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="scanner",
-        description="DIY overhead document scanner -- Blueprint v1.0",
+        description="Stereoscopic overhead document scanner -- Blueprint v1.1",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
@@ -297,6 +324,28 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--out", default="selftest_out")
     s.add_argument("-q", "--quiet", action="store_true")
     s.set_defaults(func=cmd_selftest)
+
+    ui = sub.add_parser("gui", help="operator interface in a browser")
+    ui.add_argument("--node", action="append", metavar="[cam0=]http://host:8000")
+    ui.add_argument("--mock", action="store_true",
+                    help="spin up simulated cameras in this process")
+    ui.add_argument("--mock-cameras", type=int, default=2)
+    ui.add_argument("--mock-scale", type=float, default=0.12,
+                    help="render scale for the mock cameras; 1.0 is 24 MP")
+    ui.add_argument("--host", default="127.0.0.1",
+                    help="0.0.0.0 to reach it from a phone on the same LAN")
+    ui.add_argument("--port", type=int, default=8800)
+    ui.add_argument("-o", "--out", default="captures")
+    ui.add_argument("-p", "--profile", default="standard",
+                    choices=["standard", "clean", "max"])
+    ui.add_argument("--coverage", default="stereo", choices=["stereo", "tile"])
+    ui.add_argument("-f", "--format", default="A3 spread")
+    ui.add_argument("--overlap", type=float, default=20.0)
+    ui.add_argument("--baseline", type=float, default=200.0)
+    ui.add_argument("--focal", type=float, default=30.0)
+    ui.add_argument("--aperture", type=float, default=8.0)
+    ui.add_argument("--log-level", default="warning")
+    ui.set_defaults(func=cmd_gui)
 
     return p
 

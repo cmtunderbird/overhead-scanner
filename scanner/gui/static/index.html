@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Overhead Scanner</title>
+<style>
+:root{
+  --bg:#10100e; --panel:#191916; --panel2:#1f1f1b; --line:#2e2e29; --ink:#f0eee6;
+  --dim:#8d8a7e; --accent:#d97757; --accent2:#6a9fb5; --warn:#c2a24a; --ok:#7fa66a;
+  --mono:ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Helvetica,Arial,sans-serif;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
+     font-size:14px;-webkit-font-smoothing:antialiased;overflow:hidden}
+button{font-family:inherit;font-size:13px;cursor:pointer;border-radius:4px;
+  border:1px solid var(--line);background:var(--panel2);color:var(--ink);
+  padding:7px 12px;transition:.12s}
+button:hover:not(:disabled){border-color:var(--dim)}
+button:disabled{opacity:.4;cursor:not-allowed}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff;font-weight:600}
+button.primary:hover:not(:disabled){filter:brightness(1.1)}
+input,select{font-family:var(--mono);font-size:12.5px;background:#141412;color:var(--ink);
+  border:1px solid var(--line);border-radius:4px;padding:6px 8px;width:100%}
+input:focus,select:focus{outline:none;border-color:var(--accent2)}
+label{display:block;font-family:var(--mono);font-size:10px;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--dim);margin:0 0 5px}
+
+/* ---------- layout ---------- */
+.app{display:grid;grid-template-rows:auto 1fr auto;height:100vh}
+header{display:flex;align-items:center;gap:16px;padding:10px 16px;
+  border-bottom:1px solid var(--line);background:var(--panel)}
+.brand{font-weight:650;letter-spacing:-.01em;white-space:nowrap}
+.brand small{color:var(--dim);font-weight:400;margin-left:8px;font-size:12px}
+.stats{display:flex;gap:16px;margin-left:auto;flex-wrap:wrap}
+.stat{text-align:right}
+.stat .v{font-family:var(--mono);font-size:14px;line-height:1.1}
+.stat .k{font-family:var(--mono);font-size:9px;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--dim);margin-top:2px}
+.pill{font-family:var(--mono);font-size:11px;padding:3px 9px;border-radius:99px;
+  border:1px solid var(--line);color:var(--dim);white-space:nowrap}
+.pill.on{color:var(--ok);border-color:#3c5730}
+.pill.off{color:var(--accent);border-color:#5a3226}
+
+main{display:grid;grid-template-columns:1fr 380px;overflow:hidden}
+.views{padding:12px;overflow:auto;display:flex;flex-direction:column;gap:12px}
+.viewgrid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(320px,1fr))}
+.cam{background:var(--panel);border:1px solid var(--line);border-radius:6px;overflow:hidden;
+  display:flex;flex-direction:column}
+.cam .bar{display:flex;align-items:center;gap:8px;padding:8px 10px;
+  border-bottom:1px solid var(--line);font-family:var(--mono);font-size:12px}
+.cam .bar .id{color:var(--ink)}
+/* The frame is bounded by the window, never by the frame's own pixels: a
+   24 MP portrait capture must not push the sidebar off the screen. */
+.cam .frame{position:relative;background:#0b0b0a;min-height:200px;
+  height:calc(100vh - 300px);max-height:70vh;padding:6px;
+  display:flex;align-items:center;justify-content:center;overflow:hidden}
+/* The overlay tracks the *image*, not the letterbox, so the focus zones
+   land where they were actually measured.  fitImage() gives .fit the
+   image's own aspect ratio and picks which axis to pin, so the box the
+   overlay sits on is exactly the box the pixels sit on. */
+.fit{position:relative;aspect-ratio:3/2;height:100%;max-width:100%;max-height:100%}
+.fit img{display:block;width:100%;height:100%;object-fit:contain}
+.cam .frame .empty{color:var(--dim);font-family:var(--mono);font-size:12px;padding:20px;
+  text-align:center;line-height:1.6}
+.overlay{position:absolute;inset:0;pointer-events:none}
+#focusPanel .cam .frame{height:46vh;max-height:46vh}
+.fz{position:absolute;border:1px solid rgba(217,119,87,.75);
+  font-family:var(--mono);font-size:10px;color:#fff;background:rgba(0,0,0,.45)}
+.fz b{display:block;padding:1px 3px;font-weight:400}
+
+aside{border-left:1px solid var(--line);background:var(--panel);
+  display:flex;flex-direction:column;overflow:hidden}
+nav{display:flex;border-bottom:1px solid var(--line);flex-shrink:0}
+nav button{flex:1;border:none;border-bottom:2px solid transparent;background:none;
+  border-radius:0;font-family:var(--mono);font-size:11px;text-transform:uppercase;
+  letter-spacing:.04em;color:var(--dim);padding:10px 4px}
+nav button.on{color:var(--accent);border-bottom-color:var(--accent)}
+.tab{display:none;padding:14px;overflow-y:auto}
+.tab.on{display:block}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px}
+.field{margin-bottom:12px}
+.btns{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px}
+.note{font-size:12px;color:var(--dim);line-height:1.5;border-left:2px solid var(--warn);
+  padding-left:10px;margin:12px 0}
+.note b{color:var(--warn)}
+h3{font-size:12px;font-family:var(--mono);text-transform:uppercase;letter-spacing:.06em;
+  color:var(--dim);margin:18px 0 10px;font-weight:500}
+h3:first-child{margin-top:0}
+table{width:100%;border-collapse:collapse;font-size:12px}
+td{padding:4px 0;border-bottom:1px solid var(--line)}
+td.n{text-align:right;font-family:var(--mono)}
+pre{font-family:var(--mono);font-size:10px;line-height:1.5;color:var(--dim);
+  background:#141412;border:1px solid var(--line);border-radius:4px;padding:9px;
+  overflow-x:auto;white-space:pre-wrap;margin:0}
+
+.bars .b{margin-bottom:9px}
+.bars .lab{display:flex;justify-content:space-between;font-family:var(--mono);
+  font-size:11px;margin-bottom:3px}
+.bars .track{height:7px;background:#141412;border-radius:3px;overflow:hidden;position:relative}
+.bars .fill{height:100%;background:var(--accent2);transition:width .2s}
+.bars .fill.good{background:var(--ok)}
+.bars .fill.past{background:var(--warn)}
+
+footer{border-top:1px solid var(--line);background:var(--panel);padding:8px 12px;
+  display:flex;align-items:center;gap:12px;overflow-x:auto;min-height:74px}
+.thumb{flex-shrink:0;text-align:center}
+.thumb img{height:46px;border-radius:3px;border:1px solid var(--line);display:block}
+.thumb .cap{font-family:var(--mono);font-size:9px;color:var(--dim);margin-top:3px}
+.empty-foot{color:var(--dim);font-family:var(--mono);font-size:12px}
+.err{color:var(--accent);font-size:12px;font-family:var(--mono);margin:8px 0;
+  line-height:1.5;word-break:break-word}
+.busy{opacity:.5;pointer-events:none}
+
+/* Phone and small tablet: one column, page scrolls.  The interface is
+   meant to be usable standing at the rig with the laptop out of reach. */
+@media (max-width:880px){
+  body{overflow:auto}
+  .app{height:auto;min-height:100vh}
+  header{flex-wrap:wrap;gap:10px}
+  .stats{margin-left:0;gap:14px}
+  main{grid-template-columns:1fr;overflow:visible}
+  .views,aside,.tab{overflow:visible}
+  aside{border-left:none;border-top:1px solid var(--line)}
+  .cam .frame{height:50vh;max-height:50vh}
+  #focusPanel .cam .frame{height:50vh;max-height:50vh}
+}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <header>
+    <div class="brand">Overhead Scanner<small id="modeLabel">—</small></div>
+    <div class="stats" id="stats"></div>
+  </header>
+
+  <main>
+    <section class="views">
+      <div class="viewgrid" id="cams"></div>
+      <div id="focusPanel"></div>
+    </section>
+
+    <aside>
+      <nav id="tabs"></nav>
+      <div class="tab on" data-t="capture">
+        <h3>Capture</h3>
+        <div class="row">
+          <div><label>Profile</label>
+            <select id="profile">
+              <option value="standard">standard — 1 frame</option>
+              <option value="clean">clean — 3 frames</option>
+              <option value="max">max — 9 frames</option>
+            </select></div>
+          <div><label>Spreads</label><input id="count" type="number" value="1" min="1"></div>
+        </div>
+        <div class="field"><label>Output folder</label><input id="outDir" value="captures"></div>
+        <div class="btns">
+          <button class="primary" id="btnCapture">Capture</button>
+          <button id="btnReset">New session</button>
+        </div>
+        <div id="capErr"></div>
+        <h3>Throughput</h3>
+        <table id="thru"><tr><td colspan="2" style="color:var(--dim)">nothing captured yet</td></tr></table>
+        <div class="note"><b>Sustainable burst</b> = transfer time ≤ page-turn time,
+          or the queue grows without bound. At ~15 MB/s and a 4 s page turn that is
+          two to three frames.</div>
+      </div>
+
+      <div class="tab" data-t="focus">
+        <h3>Focus</h3>
+        <div class="note">Live view is ~1/35 of the sensor's pixels and
+          <b>cannot show you focus</b>. These scores come from a real captured
+          frame. The number means nothing alone — turn the ring and watch it
+          peak, then back off until it falls.</div>
+        <div class="btns">
+          <button class="primary" id="btnFocus">Measure focus</button>
+          <button id="btnFocusLoop">Auto-repeat</button>
+          <button id="btnFocusReset">Reset peaks</button>
+        </div>
+        <div id="focusOut"></div>
+      </div>
+
+      <div class="tab" data-t="rig">
+        <h3>Mode</h3>
+        <div class="field"><label>Coverage</label>
+          <select id="coverage">
+            <option value="stereo">stereo — measure and flatten the page</option>
+            <option value="tile">tile — maximum resolution, page assumed flat</option>
+          </select></div>
+        <div class="row">
+          <div><label>Format</label><select id="document"></select></div>
+          <div><label>Aperture f/</label><input id="fnum" type="number" step="0.1" value="8"></div>
+        </div>
+        <div class="row">
+          <div><label>Baseline mm</label><input id="baseline" type="number" value="200"></div>
+          <div><label>Overlap mm</label><input id="overlap" type="number" value="20"></div>
+        </div>
+        <div class="btns"><button class="primary" id="btnRig">Apply</button></div>
+        <h3>Solution</h3>
+        <pre id="geoReport">—</pre>
+      </div>
+
+      <div class="tab" data-t="nodes">
+        <h3>Cameras</h3>
+        <div class="field"><label>Node URLs — one per line, cam0=http://host:8000</label>
+          <textarea id="nodeList" rows="4" style="width:100%;font-family:var(--mono);
+            font-size:12px;background:#141412;color:var(--ink);border:1px solid var(--line);
+            border-radius:4px;padding:7px"></textarea></div>
+        <div class="btns"><button class="primary" id="btnNodes">Apply</button></div>
+        <h3>Settings — applied to every camera</h3>
+        <div class="row">
+          <div><label>ISO</label><input id="iso" value="200"></div>
+          <div><label>Shutter</label><input id="shutter" value="1/125"></div>
+        </div>
+        <div class="field"><label>Aperture</label><input id="aperture" value="8.0"></div>
+        <div class="btns"><button id="btnConfig">Send to cameras</button></div>
+        <div id="cfgOut"></div>
+        <div class="note">Sony bodies refuse aperture and shutter over PTP unless
+          the <b>mode dial is on M</b>. A refusal is reported, not hidden.</div>
+      </div>
+    </aside>
+  </main>
+
+  <footer id="strip"><span class="empty-foot">captured spreads appear here</span></footer>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const api = async (path, opts) => {
+  const r = await fetch(path, opts);
+  if (!r.ok) {
+    let d; try { d = (await r.json()).detail; } catch { d = r.statusText; }
+    throw new Error(typeof d === 'string' ? d : JSON.stringify(d));
+  }
+  return r.json();
+};
+const post = (p, body) => api(p, {method:'POST', headers:{'Content-Type':'application/json'},
+                                 body: JSON.stringify(body||{})});
+
+let STATE = null, focusTimer = null, streaming = {};
+
+/* ---------------- tabs ---------------- */
+const TABS = [['capture','capture'],['focus','focus'],['rig','rig'],['nodes','cameras']];
+$('#tabs').innerHTML = TABS.map(([id,lab],i)=>
+  `<button data-t="${id}" class="${i===0?'on':''}">${lab}</button>`).join('');
+$('#tabs').onclick = e => {
+  const t = e.target.dataset.t; if(!t) return;
+  document.querySelectorAll('nav button').forEach(b=>b.classList.toggle('on',b.dataset.t===t));
+  document.querySelectorAll('.tab').forEach(d=>d.classList.toggle('on',d.dataset.t===t));
+};
+
+/* ---------------- render ---------------- */
+function renderHeader(s){
+  const g = s.geometry, r = s.rig;
+  $('#modeLabel').textContent =
+    `${r.coverage} · ${r.document}` + (r.coverage==='stereo' ? ` · ${r.baseline_mm} mm baseline` : ` · ${r.overlap_mm} mm overlap`);
+  const cells = [
+    ['DPI', g.dpi],
+    ['spread', g.spread_mp + ' MP'],
+    ['working dist', g.working_distance_mm + ' mm'],
+    ['DOF', '±' + (g.dof_mm/2).toFixed(1) + ' mm'],
+  ];
+  if (g.stereo_dz_um != null) cells.push(['depth', g.stereo_dz_um + ' µm']);
+  $('#stats').innerHTML =
+    cells.map(([k,v])=>`<div class="stat"><div class="v">${v}</div><div class="k">${k}</div></div>`).join('')
+    + s.nodes.map(n=>{
+        const ok = n.reachable && n.connected;
+        const why = !n.reachable ? 'unreachable' : (n.connected ? 'ready' : 'no camera');
+        return `<span class="pill ${ok?'on':'off'}" title="${(n.error||'')}">${n.camera_id} · ${why}</span>`;
+      }).join('');
+}
+
+/* The panel is rebuilt only when a node's identity or readiness changes.
+   Rebuilding on every poll would tear down the live view four times a
+   minute, which is exactly when you are looking at it. */
+let camSig = null;
+function renderCams(s){
+  const el = $('#cams');
+  const sig = JSON.stringify(s.nodes.map(
+    n => [n.camera_id, n.model||'', !!n.reachable, !!n.connected, n.error||'']));
+  if(sig === camSig) return;
+  camSig = sig;
+
+  if(!s.nodes.length){
+    el.innerHTML = `<div class="cam"><div class="frame"><div class="empty">
+      No cameras configured.<br>Add node URLs in the <b>cameras</b> tab,<br>
+      or start with <span style="color:var(--accent)">python -m scanner gui --mock</span>
+      </div></div></div>`;
+    return;
+  }
+  el.innerHTML = s.nodes.map(n=>`
+    <div class="cam" data-cam="${n.camera_id}">
+      <div class="bar">
+        <span class="id">${n.camera_id}</span>
+        <span style="color:var(--dim)">${n.model||'—'}</span>
+        <span style="margin-left:auto;display:flex;gap:6px">
+          <button data-act="live" data-cam="${n.camera_id}">${streaming[n.camera_id]?'Stop':'Live'}</button>
+          <button data-act="snap" data-cam="${n.camera_id}">Snap</button>
+          ${n.reachable && !n.connected ? `<button data-act="conn" data-cam="${n.camera_id}">Reconnect</button>`:''}
+        </span>
+      </div>
+      <div class="frame" id="frame-${n.camera_id}">
+        ${n.reachable ? '<div class="empty">press Live or Snap</div>'
+                      : `<div class="empty" style="color:var(--accent)">unreachable<br><span style="font-size:10px">${(n.error||'').slice(0,90)}</span></div>`}
+      </div>
+    </div>`).join('');
+  // a rebuild that was forced by a status change must not drop the stream
+  for(const n of s.nodes) if(streaming[n.camera_id]) showStream(n.camera_id);
+}
+
+/* Pin the axis that runs out first, so the image fills the frame in one
+   direction and .fit shrink-wraps it in the other. */
+function fitImage(img){
+  const frame = img.closest('.frame'); if(!frame) return;
+  const w = img.naturalWidth, h = img.naturalHeight; if(!w || !h) return;
+  const box = frame.getBoundingClientRect(), fit = img.parentNode;
+  fit.style.aspectRatio = `${w}/${h}`;
+  const wide = (box.width / Math.max(box.height, 1)) > (w / h);
+  fit.style.height = wide ? '100%' : 'auto';
+  fit.style.width  = wide ? 'auto' : '100%';
+}
+window.addEventListener('resize', () =>
+  document.querySelectorAll('.fit img').forEach(fitImage));
+
+function showStream(cam){
+  $(`#frame-${cam}`).innerHTML =
+    `<div class="fit"><img onload="fitImage(this)" src="/api/stream/${cam}?fps=4&t=${Date.now()}" alt="${cam}"></div>`;
+}
+
+$('#cams').onclick = async e => {
+  const b = e.target.closest('button'); if(!b) return;
+  const cam = b.dataset.cam, act = b.dataset.act;
+  const frame = $(`#frame-${cam}`);
+  if(act==='snap'){
+    frame.innerHTML = `<div class="fit"><img onload="fitImage(this)" src="/api/preview/${cam}?t=${Date.now()}" alt="${cam}"></div>`;
+    streaming[cam] = false;
+    const live = $(`button[data-act="live"][data-cam="${cam}"]`);
+    if(live) live.textContent = 'Live';
+  } else if(act==='live'){
+    if(streaming[cam]){ streaming[cam]=false; frame.innerHTML='<div class="empty">stopped</div>'; b.textContent='Live'; }
+    else { streaming[cam]=true; b.textContent='Stop'; showStream(cam); }
+  } else if(act==='conn'){
+    b.disabled = true;
+    try { await post(`/api/connect/${cam}`); } catch(err){ alert(err.message); }
+    b.disabled = false; refresh();
+  }
+};
+
+/* ---------------- focus ---------------- */
+async function measureFocus(){
+  if(!STATE || !STATE.nodes.length) return;
+  const out = $('#focusOut'); out.classList.add('busy');
+  const panel = $('#focusPanel');
+  let html = '', panels = '';
+  for(const n of STATE.nodes){
+    try{
+      const d = await api(`/api/focus/${n.camera_id}`);
+      html += `<h3>${n.camera_id} — ${d.size[0]}×${d.size[1]}</h3><div class="bars">` +
+        d.regions.map(r=>{
+          const pct = Math.round((r.relative||0)*100);
+          const cls = pct>=99 ? 'good' : (pct>=90 ? '' : 'past');
+          return `<div class="b"><div class="lab"><span>${r.name}</span>
+            <span style="color:${pct>=99?'var(--ok)':'var(--dim)'}">${pct}% of peak</span></div>
+            <div class="track"><div class="fill ${cls}" style="width:${pct}%"></div></div></div>`;
+        }).join('') + '</div>';
+      const ex = d.exposure;
+      html += `<table><tr><td>mean level</td><td class="n">${ex.mean}</td></tr>
+        <tr><td>clipped highlights</td><td class="n" style="color:${ex.clipped_high_pct>0.5?'var(--accent)':'inherit'}">${ex.clipped_high_pct}%</td></tr>
+        <tr><td>clipped shadows</td><td class="n">${ex.clipped_low_pct}%</td></tr></table>`;
+      if(d.jpeg_b64){
+        panels += `<div class="cam"><div class="bar"><span class="id">${n.camera_id}</span>
+          <span style="color:var(--dim)">focus frame — full resolution capture</span></div>
+          <div class="frame"><div class="fit">
+            <img onload="fitImage(this)" src="data:image/jpeg;base64,${d.jpeg_b64}">
+            <div class="overlay">${zoneBoxes(d.regions)}</div>
+          </div></div></div>`;
+      }
+    }catch(err){ html += `<div class="err">${n.camera_id}: ${err.message}</div>`; }
+  }
+  out.innerHTML = html; out.classList.remove('busy');
+  const first = !panel.innerHTML;
+  panel.innerHTML = panels ? `<div class="viewgrid">${panels}</div>` : '';
+  if(panels && first) panel.scrollIntoView({behavior:'smooth', block:'start'});
+}
+const ZONES = {'top left':[6,6],'top right':[74,6],'centre':[40,40],
+               'bottom left':[6,74],'bottom right':[74,74]};
+function zoneBoxes(regions){
+  return regions.map(r=>{
+    const z = ZONES[r.name]; if(!z) return '';
+    const pct = Math.round((r.relative||0)*100);
+    return `<div class="fz" style="left:${z[0]}%;top:${z[1]}%;width:20%;height:20%">
+      <b>${pct}%</b></div>`;
+  }).join('');
+}
+$('#btnFocus').onclick = measureFocus;
+$('#btnFocusReset').onclick = async () => {
+  for(const n of (STATE?.nodes||[])) await post(`/api/focus/${n.camera_id}/reset`);
+  measureFocus();
+};
+$('#btnFocusLoop').onclick = e => {
+  if(focusTimer){ clearInterval(focusTimer); focusTimer=null; e.target.textContent='Auto-repeat'; }
+  else { e.target.textContent='Stop repeating'; measureFocus();
+         focusTimer = setInterval(measureFocus, 4000); }
+};
+
+/* ---------------- capture ---------------- */
+$('#btnCapture').onclick = async e => {
+  e.target.disabled = true; $('#capErr').innerHTML='';
+  try{
+    const d = await post('/api/capture', {count:+$('#count').value,
+                                          profile:$('#profile').value});
+    const bad = d.records.filter(r=>!r.ok);
+    if(bad.length) $('#capErr').innerHTML =
+      `<div class="err">${bad.length} spread(s) failed: ${JSON.stringify(bad[0].errors)}</div>`;
+    renderThroughput(d.throughput); await renderStrip();
+  }catch(err){ $('#capErr').innerHTML = `<div class="err">${err.message}</div>`; }
+  e.target.disabled = false; refresh();
+};
+$('#btnReset').onclick = async () => { await post('/api/session/reset');
+  $('#strip').innerHTML='<span class="empty-foot">captured spreads appear here</span>';
+  renderThroughput({}); refresh(); };
+
+function renderThroughput(t){
+  const rows = Object.entries(t||{});
+  $('#thru').innerHTML = rows.length
+    ? rows.map(([k,v])=>`<tr><td>${k.replace(/_/g,' ')}</td><td class="n">${v}</td></tr>`).join('')
+    : '<tr><td colspan="2" style="color:var(--dim)">nothing captured yet</td></tr>';
+}
+
+async function renderStrip(){
+  const m = await api('/api/session/manifest');
+  const strip = $('#strip');
+  if(!m.captures.length){ strip.innerHTML='<span class="empty-foot">captured spreads appear here</span>'; return; }
+  strip.innerHTML = m.captures.slice(-24).flatMap(rec =>
+    Object.entries(rec.files).map(([cam,paths]) => paths.slice(0,1).map(p =>
+      `<div class="thumb"><img src="/api/thumb?width=200&path=${encodeURIComponent(p)}"
+        onerror="this.replaceWith(Object.assign(document.createElement('div'),
+        {className:'cap',textContent:'raw'}))">
+      <div class="cap">${String(rec.seq).padStart(4,'0')} · ${cam}</div></div>`).join('')
+    ).join('')).join('');
+}
+
+/* ---------------- rig ---------------- */
+async function previewGeometry(){
+  const q = new URLSearchParams({coverage:$('#coverage').value,
+    overlap_mm:$('#overlap').value, baseline_mm:$('#baseline').value,
+    document:$('#document').value, f_number:$('#fnum').value});
+  const d = await api('/api/geometry?'+q);
+  $('#geoReport').textContent = d.ok ? d.report : '⚠ ' + d.error;
+}
+['coverage','overlap','baseline','document','fnum'].forEach(id=>{
+  const el = $('#'+id); if(el) el.addEventListener('change', previewGeometry);
+});
+$('#btnRig').onclick = async () => {
+  await post('/api/rig', {coverage:$('#coverage').value,
+    overlap_mm:+$('#overlap').value, baseline_mm:+$('#baseline').value,
+    document:$('#document').value, f_number:+$('#fnum').value,
+    profile:$('#profile').value, out_dir:$('#outDir').value});
+  refresh();
+};
+$('#btnNodes').onclick = async () => {
+  await post('/api/nodes', {nodes:$('#nodeList').value.split('\n')});
+  refresh();
+};
+$('#btnConfig').onclick = async e => {
+  e.target.disabled = true;
+  try{
+    const d = await post('/api/config', {iso:+$('#iso').value,
+      shutter:$('#shutter').value, aperture:$('#aperture').value});
+    $('#cfgOut').innerHTML = Object.entries(d).map(([c,r])=>
+      `<div class="${r.ok?'':'err'}" style="font-size:12px;font-family:var(--mono)">
+        ${c}: ${r.ok?'ok':(''+r.detail).slice(0,120)}</div>`).join('');
+  }catch(err){ $('#cfgOut').innerHTML = `<div class="err">${err.message}</div>`; }
+  e.target.disabled = false;
+};
+
+/* ---------------- boot ---------------- */
+async function refresh(){
+  try{
+    const s = await api('/api/state'); STATE = s;
+    renderHeader(s); renderCams(s); renderThroughput(s.throughput);
+    const r = s.rig;
+    if($('#document').options.length !== r.formats.length)
+      $('#document').innerHTML = r.formats.map(f=>`<option${f===r.document?' selected':''}>${f}</option>`).join('');
+    $('#coverage').value = r.coverage; $('#overlap').value = r.overlap_mm;
+    $('#baseline').value = r.baseline_mm; $('#fnum').value = r.f_number;
+    $('#profile').value = r.profile; $('#outDir').value = r.out_dir;
+    if(!$('#nodeList').value)
+      $('#nodeList').value = s.nodes.map(n=>`${n.camera_id}=${n.url}`).join('\n');
+    await previewGeometry();
+  }catch(err){ console.error(err); }
+}
+refresh();
+setInterval(()=>{ if(!focusTimer) refresh(); }, 6000);
+</script>
+</body>
+</html>

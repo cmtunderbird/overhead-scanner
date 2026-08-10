@@ -132,6 +132,16 @@ acceptance  (synthetic rehearsal, scale 0.25, page rendered at 3.2x the capture 
 
 Nothing in that table is hard-coded. Every row is measured from synthetic pixels by the same code that will measure real ones.
 
+**Then drive it from a browser:**
+
+```bash
+python -m scanner gui --mock                # http://localhost:8800
+```
+
+`--mock` starts simulated camera nodes in the same process, so the operator
+interface — live view, focus assist, capture, live geometry — is usable today
+with no hardware at all. See [`docs/gui.md`](docs/gui.md).
+
 **Other useful first commands:**
 
 ```bash
@@ -249,6 +259,7 @@ Design point **20–30 mm**. Below 10 mm the band is too narrow to blend reliabl
 | [`docs/calibration.md`](docs/calibration.md) | The full calibration procedure, diagnostics and failure modes |
 | [`docs/pipeline.md`](docs/pipeline.md) | Every processing stage, why it is in that order, and its parameters |
 | [`docs/metrics.md`](docs/metrics.md) | The measurement harness — MTF, DPI, seam, ΔE — and how to read the numbers |
+| [`docs/gui.md`](docs/gui.md) | **The operator interface** — live view, focus assist, capture, live geometry |
 | [`docs/api.md`](docs/api.md) | Node HTTP API and orchestrator reference |
 | [`docs/hardware.md`](docs/hardware.md) | Bill of materials, camera settings, assembly notes |
 | [`docs/decisions.md`](docs/decisions.md) | Decision record — why twin A6000, why not an OAK, why a platen |
@@ -287,13 +298,18 @@ scanner/
 ├── stereo/
 │   ├── sweep.py           plane-sweep surface recovery from a stereo pair
 │   └── dewarp.py          flattening, view fusion, paper-coordinate error
+├── metrics/
+│   └── focus.py           Tenengrad focus scoring + exposure, per region
 ├── node/
 │   ├── server.py          FastAPI camera node
 │   └── backends/          base · mock · gphoto2  (interchangeable by design)
-└── orchestrator/
-    └── session.py         sequence-counter pairing, retry, manifest
+├── orchestrator/
+│   └── session.py         sequence-counter pairing, retry, manifest
+└── gui/
+    ├── server.py          the operator interface: proxy + state
+    └── static/index.html  the whole UI, one file, no build step
 
-tests/                     89 tests
+tests/                     130 tests
 docs/                      the documentation above
 ```
 
@@ -309,6 +325,7 @@ python -m scanner capture      drive a capture session across N nodes
 python -m scanner process      raw frames -> archival masters
 python -m scanner measure      MTF50 / DPI on an image
 python -m scanner selftest     rehearse the whole rig, no hardware
+python -m scanner gui          the operator interface in a browser
 ```
 
 Examples:
@@ -332,6 +349,10 @@ python -m scanner process captures/ -k calibration/rig.json -o masters/
 
 # measure a real photograph
 python -m scanner measure master.tif --edge 100,200,180,180 --px-per-mm 18.18
+
+# operate the rig from a browser -- or from a tablet on the same LAN
+python -m scanner gui --node cam0=http://pi1:8000 --node cam1=http://pi2:8000 \
+                      --host 0.0.0.0
 ```
 
 Full details in [`docs/api.md`](docs/api.md).
@@ -341,7 +362,7 @@ Full details in [`docs/api.md`](docs/api.md).
 ## Testing
 
 ```bash
-python -m pytest -q          # 106 tests, ~65 s
+python -m pytest -q          # 130 tests, ~105 s
 ```
 
 These are not smoke tests:
@@ -352,6 +373,7 @@ These are not smoke tests:
 - **`test_node_api.py`** exercises the node over real HTTP, including a deliberately dropped PTP session that must be recovered transparently.
 - **`test_orchestrator.py`** runs two live uvicorn servers on real sockets and drives them through a session.
 - **`test_end_to_end.py`** calibrates a two-camera rig from scratch out of simulated captures and confirms the **measured** DPI matches the optical model to within 1 %.
+- **`test_gui.py`** runs real uvicorn mock nodes and points the operator interface at them over loopback — because every interesting failure in a proxy lives in the hop, not in the handler — and checks that focus scoring is monotonic in blur and localises a soft corner to *that* corner.
 - **`test_stereo.py`** renders a curved book, recovers its surface from a stereo pair, flattens it, and asserts the residual distortion is more than 5× smaller than assuming the page is flat.
 
 ---

@@ -35,6 +35,15 @@ python -m scanner selftest
 If the selftest is green, everything downstream is already proven except
 the camera itself.
 
+**And have a look at the interface you will be driving tomorrow:**
+
+```bash
+python -m scanner gui --mock          # http://localhost:8800
+```
+
+It starts simulated cameras in the same process, so every control works
+tonight. See [`gui.md`](gui.md).
+
 ---
 
 ## 1. Talk to the camera (30 min)
@@ -104,6 +113,28 @@ Confirm the framing:
 ```bash
 python -m scanner geometry -n 1 -f A4     # 484 DPI, WD 434 mm
 ```
+
+**Do step 3 from the browser.** In another terminal:
+
+```bash
+python -m scanner gui --node cam0=http://localhost:8000 -f A4
+```
+
+Open `http://localhost:8800`, go to the **focus** tab and press *Auto-repeat*.
+It takes a real full-resolution frame every four seconds and scores five
+regions of it, holding the peak per region.
+
+> **The live view cannot show you focus** — it is about 1/35 of the sensor's
+> pixels, and the downscale is itself a low-pass filter. The bars are what to
+> watch: turn the ring until they stop rising, and if they start falling you
+> have gone past. Press *Reset peaks* whenever you change the page, the
+> lighting or the height.
+
+Watch the corners, not just the centre. Corner sharpness is the number that
+decides whether the kit lens stays.
+
+Then stop the auto-repeat before you walk away — each measurement is a real
+shutter actuation.
 
 ---
 

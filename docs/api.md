@@ -76,8 +76,47 @@ resulting status.
 
 ### `GET /preview`
 
-Returns `image/jpeg` — a small frame for framing and focus. Never used for
-measurement.
+Returns `image/jpeg` — a small frame for **framing**. Never used for
+measurement, and never for focus: see `/focus` below.
+
+### `GET /stream?fps=4.0`
+
+`multipart/x-mixed-replace; boundary=frame` — the preview, repeated. An MJPEG
+stream costs nothing on the client (every browser decodes it natively, with no
+JavaScript) and degrades gracefully: a dropped frame is a dropped frame, not a
+broken session.
+
+Rate-limited server-side by `fps`. The default of 4 is chosen so live view does
+not compete with a capture for USB bandwidth.
+
+### `GET /focus`
+
+**Takes a real, full-resolution frame** and scores it.
+
+```json
+{
+  "camera_id": "cam0",
+  "size": [6000, 4000],
+  "regions": [{"name": "top left", "score": 25.86}, "..."],
+  "exposure": {"mean": 189.1, "clipped_high_pct": 0.0,
+               "clipped_low_pct": 0.0, "histogram": ["..."]},
+  "jpeg_b64": "..."
+}
+```
+
+This is the one endpoint that deliberately costs a shutter actuation, and it has
+to. **Live view is roughly 1/35 of the sensor's pixels, and downscaling is
+itself a low-pass filter** — a preview can look perfectly sharp on a frame that
+is visibly soft at full size. Scoring the preview would produce a number that
+tracks the preview's sharpness, not the camera's.
+
+`score` is Tenengrad — mean squared Sobel gradient, normalised by image variance
+so it does not merely restate exposure. Five regions, because a centre-sharp,
+corner-soft frame is a lens verdict and is invisible on one central score.
+
+The absolute value means nothing; the change as you turn the ring does. The GUI
+holds the per-region peak and shows the current score against it — see
+[`gui.md`](gui.md).
 
 ### `POST /capture`
 
@@ -241,6 +280,7 @@ python -m scanner capture      drive a capture session
 python -m scanner process      raw frames -> archival masters
 python -m scanner measure      MTF50 / DPI on an image
 python -m scanner selftest     rehearse the whole rig, no hardware
+python -m scanner gui          the operator interface in a browser
 ```
 
 ### `geometry`
@@ -327,6 +367,28 @@ IMAGE
 
 Exit code 0 if every acceptance check passes, 1 otherwise — so it works as a CI
 gate.
+
+### `gui`
+
+```
+    --node [camN=]URL  repeatable; the camera nodes
+    --mock             spin up simulated cameras in this process
+    --mock-cameras N   default 2
+    --mock-scale F     render scale for the mocks (default 0.12)
+    --host ADDR        default 127.0.0.1; use 0.0.0.0 to reach it from a tablet
+    --port N           default 8800
+-o, --out DIR          capture folder (default captures/)
+-p, --profile NAME     standard | clean | max
+    --coverage MODE    stereo | tile
+-f, --format NAME      "A3 spread" | "A4" | ...
+    --overlap MM       tile mode
+    --baseline MM      stereo mode
+    --focal MM         default 30
+    --aperture N       default 8
+```
+
+`--mock` needs no hardware at all: it starts simulated camera nodes inside the
+same process and points the interface at them. See [`gui.md`](gui.md).
 
 ---
 
