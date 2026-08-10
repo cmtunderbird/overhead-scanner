@@ -1,0 +1,134 @@
+"""
+The node API, exercised over real HTTP against the mock camera.
+
+If the orchestrator is correct here it is correct against a Sony: the
+mock drops its PTP session, takes realistic transfer time and returns a
+different page each capture, which are the three behaviours that break
+naive capture code.
+"""
+import numpy as np
+import pytest
+from fastapi.testclient import TestClient
+
+from scanner.geometry import RigGeometry, A3
+from scanner.node import server
+from scanner.node.backends.base import CameraDisconnected
+from scanner.node.backends.mock import MockCamera
+
+GEOM = RigGeometry(n_cameras=2, overlap_mm=20.0, document=A3)
+
+
+@pytest.fixture
+def client():
+    cam = MockCamera("cam0", 0, GEOM, scale=0.06, page_px_per_mm=3.0,
+                     transfer_mb_s=1e6)
+    cam.connect()
+    server.set_camera(cam)
+    yield TestClient(server.app), cam
+    server.set_camera(None)
+
+
+def test_status_reports_the_camera(client):
+    c, cam = client
+    r = c.get("/status")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["camera_id"] == "cam0"
+    assert d["backend"] == "mock"
+    assert d["connected"] is True
+    assert d["profiles"] == {"standard": 1, "clean": 3, "max": 9}
+
+
+def test_config_round_trips(client):
+    c, _ = client
+    r = c.post("/config", json={"iso": 400, "aperture": "8.0"})
+    assert r.status_code == 200
+    s = r.json()["settings"]
+    assert s["iso"] == 400 and s["aperture"] == "8.0"
+    assert s["capture_target"] == "card"      # never left to the default
+
+
+def test_capture_and_fetch(client):
+    c, _ = client
+    r = c.post("/capture", json={"seq": 7, "profile": "standard"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["seq"] == 7 and len(body["files"]) == 1
+    fid = body["files"][0]["file_id"]
+    f = c.get(f"/files/{fid}")
+    assert f.status_code == 200 and len(f.content) > 1000
+
+
+@pytest.mark.parametrize("profile,frames", [("standard", 1), ("clean", 3)])
+def test_profiles_return_the_right_frame_count(client, profile, frames):
+    c, _ = client
+    r = c.post("/capture", json={"seq": 1, "profile": profile})
+    assert len(r.json()["files"]) == frames
+
+
+def test_unknown_profile_is_rejected(client):
+    c, _ = client
+    r = c.post("/capture", json={"seq": 1, "profile": "ludicrous"})
+    assert r.status_code == 400
+    assert "ludicrous" in r.json()["detail"]
+
+
+def test_missing_file_is_404(client):
+    c, _ = client
+    assert c.get("/files/nope").status_code == 404
+
+
+def test_sequence_number_is_carried_through_not_invented(client):
+    """Pairing depends on this: the node must echo the orchestrator's seq."""
+    c, _ = client
+    for seq in (0, 5, 99):
+        r = c.post("/capture", json={"seq": seq})
+        assert r.json()["seq"] == seq
+        assert all(f["seq"] == seq for f in r.json()["files"])
+
+
+def test_dropped_session_is_recovered_transparently():
+    """The A6000 does this when idle.  It must not surface as an error."""
+    cam = MockCamera("cam0", 0, GEOM, scale=0.06, page_px_per_mm=3.0,
+                     transfer_mb_s=1e6, drop_every=2)
+    cam.connect()
+    server.set_camera(cam)
+    c = TestClient(server.app)
+    try:
+        for seq in range(6):
+            r = c.post("/capture", json={"seq": seq})
+            assert r.status_code == 200, r.json()
+        assert cam.connected
+    finally:
+        server.set_camera(None)
+
+
+def test_capture_while_disconnected_reports_503():
+    cam = MockCamera("cam0", 0, GEOM, scale=0.06, page_px_per_mm=3.0)
+    server.set_camera(cam)          # never connected
+    c = TestClient(server.app)
+    try:
+        cam.disconnect()
+        cam.reconnect = lambda *a, **k: (_ for _ in ()).throw(
+            CameraDisconnected("cable unplugged"))
+        r = c.post("/capture", json={"seq": 0})
+        assert r.status_code == 503
+        assert "cable unplugged" in r.json()["detail"]
+    finally:
+        server.set_camera(None)
+
+
+def test_preview_is_a_jpeg(client):
+    c, _ = client
+    r = c.get("/preview")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "image/jpeg"
+    assert r.content[:2] == b"\xff\xd8"      # SOI
+
+
+def test_successive_captures_differ(client):
+    """A mock that returns the same bytes forever hides real bugs."""
+    c, _ = client
+    a = c.get(f"/files/{c.post('/capture', json={'seq': 0}).json()['files'][0]['file_id']}").content
+    b = c.get(f"/files/{c.post('/capture', json={'seq': 1}).json()['files'][0]['file_id']}").content
+    assert a != b

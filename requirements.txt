@@ -1,0 +1,20 @@
+# Core -- needed everywhere
+numpy>=1.24
+opencv-contrib-python>=4.8      # contrib: cv2.aruco lives there
+scipy>=1.10
+Pillow>=10.0
+
+# Node (Raspberry Pi) + orchestrator
+fastapi>=0.110
+uvicorn[standard]>=0.27
+pydantic>=2.5
+requests>=2.31
+
+# Real cameras.  Needs libgphoto2-dev first:
+#   sudo apt install -y libgphoto2-dev
+# Not installed by default so the repo works on a machine with no camera.
+# gphoto2>=2.5
+
+# Tests
+pytest>=7.4
+httpx>=0.27                      # fastapi TestClient

@@ -1,0 +1,810 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Overhead Document Scanner — Blueprint v1.0 Drawing Set</title>
+<style>
+  :root{
+    --bg:#10100e; --panel:#191916; --line:#2e2e29; --ink:#f0eee6;
+    --dim:#8d8a7e; --accent:#d97757; --accent2:#6a9fb5; --accent3:#c2a24a;
+    --ok:#7fa66a; --paper:#f5f3ea;
+    --mono:ui-monospace,'SF Mono',Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,'Segoe UI',Inter,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
+       font-size:15px;line-height:1.55;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:1180px;margin:0 auto;padding:28px 22px 80px}
+
+  header{border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:22px}
+  h1{font-size:25px;margin:0 0 6px;letter-spacing:-.02em;font-weight:620}
+  .sub{color:var(--dim);font-size:14px;margin:0}
+  .badges{display:flex;flex-wrap:wrap;gap:7px;margin-top:14px}
+  .badge{font-family:var(--mono);font-size:11.5px;letter-spacing:.03em;
+    border:1px solid var(--line);background:var(--panel);color:var(--dim);
+    padding:4px 9px;border-radius:3px}
+  .badge b{color:var(--ink);font-weight:600}
+
+  nav{display:flex;flex-wrap:wrap;gap:4px;margin-bottom:16px;
+      border-bottom:1px solid var(--line);padding-bottom:0}
+  nav button{background:none;border:none;border-bottom:2px solid transparent;
+    color:var(--dim);font-family:var(--mono);font-size:12px;letter-spacing:.04em;
+    padding:9px 13px;cursor:pointer;text-transform:uppercase;transition:.15s}
+  nav button:hover{color:var(--ink)}
+  nav button.on{color:var(--accent);border-bottom-color:var(--accent)}
+
+  .ctrl{background:var(--panel);border:1px solid var(--line);border-radius:6px;
+    padding:14px 16px;margin-bottom:18px;display:grid;
+    grid-template-columns:minmax(230px,1fr) 2fr;gap:18px;align-items:center}
+  @media(max-width:760px){.ctrl{grid-template-columns:1fr}}
+  .ctrl label{font-family:var(--mono);font-size:11px;letter-spacing:.05em;
+    text-transform:uppercase;color:var(--dim);display:block;margin-bottom:7px}
+  input[type=range]{width:100%;accent-color:var(--accent)}
+  .readout{display:grid;grid-template-columns:repeat(auto-fit,minmax(88px,1fr));gap:10px}
+  .ro{border-left:2px solid var(--line);padding-left:9px}
+  .ro .v{font-family:var(--mono);font-size:17px;color:var(--ink);line-height:1.2}
+  .ro .v.good{color:var(--ok)}
+  .ro .v.warn{color:var(--accent3)}
+  .ro .k{font-family:var(--mono);font-size:9.5px;letter-spacing:.06em;
+    text-transform:uppercase;color:var(--dim);margin-top:3px}
+
+  .layers{display:flex;flex-wrap:wrap;gap:14px;margin-bottom:12px;
+    font-family:var(--mono);font-size:11px;color:var(--dim)}
+  .layers label{display:flex;align-items:center;gap:5px;cursor:pointer}
+  .layers input{accent-color:var(--accent2);margin:0}
+
+  .sheet{display:none}
+  .sheet.on{display:block}
+  .frame{background:var(--panel);border:1px solid var(--line);border-radius:6px;
+    padding:8px;overflow:hidden}
+  svg{display:block;width:100%;height:auto}
+  .cap{color:var(--dim);font-size:13px;margin:12px 2px 0;max-width:80ch}
+  .cap b{color:var(--ink);font-weight:600}
+  h2{font-size:16px;margin:26px 0 10px;letter-spacing:-.01em}
+  h2:first-child{margin-top:6px}
+
+  table{border-collapse:collapse;width:100%;font-size:13.5px;margin:10px 0 4px}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line)}
+  th{font-family:var(--mono);font-size:10.5px;letter-spacing:.06em;
+    text-transform:uppercase;color:var(--dim);font-weight:500}
+  td.n{font-family:var(--mono);text-align:right}
+  tr.hi td{background:rgba(217,119,87,.11);color:var(--ink)}
+  tr.hi td:first-child{box-shadow:inset 2px 0 0 var(--accent)}
+  .note{border-left:2px solid var(--accent3);padding:2px 0 2px 13px;
+    color:var(--dim);font-size:13.5px;margin:14px 0}
+  .note b{color:var(--accent3)}
+
+  .blocks{display:grid;gap:12px}
+  .row{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(190px,1fr))}
+  .box{background:#1f1f1b;border:1px solid var(--line);border-radius:5px;
+    padding:12px 14px}
+  .box.hl{border-color:var(--accent);background:rgba(217,119,87,.07)}
+  .box.b2{border-color:var(--accent2);background:rgba(106,159,181,.07)}
+  .box .t{font-family:var(--mono);font-size:12px;color:var(--ink);letter-spacing:.02em}
+  .box .d{font-size:12px;color:var(--dim);margin-top:4px;line-height:1.45}
+  .arrow{text-align:center;color:var(--line);font-size:17px;line-height:1;margin:-4px 0}
+  footer{margin-top:44px;padding-top:16px;border-top:1px solid var(--line);
+    color:var(--dim);font-size:12px;font-family:var(--mono)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>DIY Overhead Document Scanner — Drawing Set</h1>
+  <p class="sub">Blueprint v1.0 · Twin Sony A6000 · Dual Raspberry Pi 5 · RTX 5060 pipeline · dimensions in millimetres</p>
+  <div class="badges">
+    <span class="badge">SENSOR <b>2 × 24.3 MP APS-C</b></span>
+    <span class="badge">LENS <b>30 mm @ f/8, locked</b></span>
+    <span class="badge">TARGET <b>beat CZUR ET Ultra · 441 DPI</b></span>
+    <span class="badge">RESULT <b id="bDpi">462 DPI / 41.2 MP</b></span>
+    <span class="badge">MOVING PARTS <b>none</b></span>
+  </div>
+</header>
+
+<nav id="nav"></nav>
+
+<div class="ctrl">
+  <div>
+    <label for="ov">Gutter overlap — <span id="ovv" style="color:var(--accent)">20</span> mm</label>
+    <input type="range" id="ov" min="10" max="40" step="1" value="20">
+    <div style="font-size:11.5px;color:var(--dim);margin-top:6px;font-family:var(--mono)">
+      drives tile width → DPI, working distance &amp; stereo band
+    </div>
+  </div>
+  <div class="readout" id="ro"></div>
+</div>
+
+<div class="layers" id="layers"></div>
+
+<!-- ============ SHEET 1 : PLAN ============ -->
+<section class="sheet" data-s="plan">
+  <div class="frame"><svg id="svgPlan" viewBox="0 0 900 840"></svg></div>
+  <p class="cap"><b>Sheet 1 — Plan view.</b> Two cameras look straight down at a flat A3 area,
+  each covering one half of the 420 mm long axis with a deliberate overlap across the spine.
+  Both are parallel and vertical: no toe-in, so the stitching homography is a pure translation
+  plus a fixed calibrated correction. The lens covers 331 mm on the page's 297 mm short axis —
+  34 mm of field is thrown away, and that waste is what buys a clean margin for deskew.</p>
+</section>
+
+<!-- ============ SHEET 2 : FRONT ELEVATION ============ -->
+<section class="sheet" data-s="front">
+  <div class="frame"><svg id="svgFront" viewBox="0 0 900 820"></svg></div>
+  <p class="cap"><b>Sheet 2 — Front elevation, viewed along the spine.</b> The two view cones
+  cross in the overlap band directly above the gutter. That crossing is free stereo with a
+  ~200 mm baseline — a height precision of about 27 µm, sitting exactly where page curvature
+  is worst. It costs nothing and is held in reserve as a dewarp input if the platen is ever
+  inconvenient.</p>
+</section>
+
+<!-- ============ SHEET 3 : SIDE ELEVATION ============ -->
+<section class="sheet" data-s="side">
+  <div class="frame"><svg id="svgSide" viewBox="0 0 900 820"></svg></div>
+  <p class="cap"><b>Sheet 3 — Side elevation, viewed along the long axis.</b> Lamps sit low and
+  wide so their specular lobe reflects away from both lenses. The depth-of-field band at f/8 is
+  ±11 mm about the platen surface — the platen keeps every page inside it, which is what removes
+  the need for focus stacking and for 3D dewarping at the same time.</p>
+</section>
+
+<!-- ============ SHEET 4 : SYSTEM ============ -->
+<section class="sheet" data-s="system">
+  <div class="frame"><svg id="svgSys" viewBox="0 0 900 500"></svg></div>
+  <p class="cap"><b>Sheet 4 — Capture architecture.</b> Two identical nodes, role assigned by
+  hostname, same SD image on both. Pairing is by a sequence counter issued from the laptop,
+  never by timestamp — network jitter is irrelevant because nothing in the scene moves.</p>
+
+  <h2>Node API</h2>
+  <table>
+    <tr><th>Endpoint</th><th>Returns</th></tr>
+    <tr><td><code>GET /status</code></td><td>model, connection state, current settings</td></tr>
+    <tr><td><code>POST /config</code></td><td>iso, shutter, aperture</td></tr>
+    <tr><td><code>GET /preview</code></td><td>low-res frame for framing</td></tr>
+    <tr><td><code>POST /capture</code></td><td>{profile, seq} → file ids</td></tr>
+    <tr><td><code>GET /files/{id}</code></td><td>the ARW</td></tr>
+    <tr><td><code>WS /events</code></td><td>progress, errors</td></tr>
+  </table>
+
+  <div class="note"><b>Three gotchas, each worth an evening.</b>
+  (1) <code>gvfs-gphoto2-volume-monitor</code> claims the camera the instant it enumerates —
+  Pi OS <b>Lite</b> has no desktop, which is precisely why Lite is specified.
+  (2) The A6000 drops its PTP session when idle; build reconnect-on-failure in from day one.
+  (3) <code>capturetarget</code> defaults vary and silently decide whether files land in camera
+  RAM or on the card — which changes all your timing. Set it explicitly.</div>
+</section>
+
+<!-- ============ SHEET 5 : PIPELINE ============ -->
+<section class="sheet" data-s="pipeline">
+  <div class="frame"><svg id="svgPipe" viewBox="0 0 900 610"></svg></div>
+  <p class="cap"><b>Sheet 5 — Processing pipeline.</b> Everything left of the split is
+  deterministic and metric. Everything right of it is a derivative. The archival master is
+  written before super-resolution is ever invoked, and the two are never conflated.</p>
+
+  <h2>Compute budget — the 8 GB VRAM constraint</h2>
+  <table>
+    <tr><th>Item</th><th class="n">Memory</th><th>Verdict</th></tr>
+    <tr><td>24 MP frame, RGB fp16</td><td class="n">144 MB</td><td>fine</td></tr>
+    <tr><td>2× SR output, 82 MP</td><td class="n">~500 MB</td><td>fine</td></tr>
+    <tr><td>RRDBNet activations at 41 MP input</td><td class="n">~5.2 GB / map</td><td style="color:var(--accent)">will not fit</td></tr>
+    <tr class="hi"><td>Tiled at 512–1024 px</td><td class="n">&lt; 1.5 GB peak</td><td>the answer</td></tr>
+  </table>
+  <div class="note"><b>Tiling is mandatory</b> and it is driven by activation memory, not output
+  size. And 2× rather than 4×: at 4× a 400-page book is ~460 GB and 5–10 hours of GPU time; at
+  2× it is ~10 GB and batches overnight.</div>
+</section>
+
+<!-- ============ SHEET 6 : GEOMETRY TABLE ============ -->
+<section class="sheet" data-s="numbers">
+  <h2>Overlap trade-off</h2>
+  <table id="tbl">
+    <tr><th>Overlap</th><th class="n">Tile width</th><th class="n">DPI</th>
+        <th class="n">Spread px</th><th class="n">Working dist.</th>
+        <th class="n">DOF @ f/8</th><th class="n">Stereo δz</th></tr>
+  </table>
+  <div class="note">Design point <b>20–30 mm</b>. Clears the CZUR's 441 DPI / 39.8 MP on both
+  axes while leaving a usable stereo band across the gutter. Below 10 mm the band is too narrow
+  to blend reliably; above 40 mm you fall behind the machine you are trying to beat.</div>
+
+  <h2>Optical derivation</h2>
+  <table>
+    <tr><th>Quantity</th><th class="n">Value</th><th>Source</th></tr>
+    <tr><td>Pixel pitch</td><td class="n">3.92 µm</td><td>23.5 mm ÷ 6000 px</td></tr>
+    <tr><td>Focal length in pixels</td><td class="n">7 692 px</td><td>30 mm ÷ 3.90 µm</td></tr>
+    <tr><td>Magnification</td><td class="n" id="dM">0.0709</td><td>15.6 mm sensor ÷ tile width</td></tr>
+    <tr><td>Working distance</td><td class="n" id="dWD">453 mm</td><td>f · (1 + 1/m)</td></tr>
+    <tr><td>Field on 6000 px axis</td><td class="n" id="dCov">331 mm</td><td>23.5 mm ÷ m — vs 297 mm needed</td></tr>
+    <tr><td>Depth of field, f/8</td><td class="n" id="dDOF">22.8 mm</td><td>2Nc(1+m)/m², c = 1.7 px</td></tr>
+    <tr><td>Airy disc, f/8, 550 nm</td><td class="n">10.7 µm = 2.7 px</td><td>2.44 λN</td></tr>
+    <tr><td>Stereo δz over gutter</td><td class="n" id="dDZ">26.7 µm</td><td>z²δu / (f<sub>px</sub>·b), δu = 0.2 px</td></tr>
+  </table>
+  <div class="note"><b>Do not stop past f/8.</b> The Airy disc is already 2.7 px wide. Every
+  further stop buys depth of field you do not need behind a platen and costs resolution you
+  bought the sensor for.</div>
+
+  <h2>Why the long axis gets split</h2>
+  <p class="cap">Splitting the 420 mm axis asks the sensor for a 297 : 220 = <b>1.35</b> aspect
+  against its native 1.50 — a comfortable fit, 11 % of field wasted. Splitting the 297 mm axis
+  instead asks for 420 : 158 = <b>2.65</b> against 1.50, throwing away most of the frame and
+  landing near 340 DPI. The choice is not stylistic; it is the difference between beating the
+  CZUR and losing to it.</p>
+
+  <h2>Acceptance criteria</h2>
+  <table>
+    <tr><th>Metric</th><th class="n">Target</th></tr>
+    <tr><td>Measured DPI, A3 spread</td><td class="n">≥ 450</td></tr>
+    <tr><td>MTF50, slanted edge, page corners</td><td class="n">≥ 0.30 cy/px</td></tr>
+    <tr><td>Stitch seam error</td><td class="n">&lt; 1 px</td></tr>
+    <tr><td>Colour ΔE between cameras</td><td class="n">&lt; 2</td></tr>
+    <tr><td>Throughput at <code>standard</code></td><td class="n">≤ 3 s / spread</td></tr>
+    <tr><td>OCR character error rate</td><td class="n">≤ CZUR, shared test set</td></tr>
+  </table>
+  <div class="note"><b>The benchmark that settles it:</b> the same 20-page book on both machines,
+  measuring MTF50, OCR CER, colour ΔE and dewarp residual. Everything else is marketing.</div>
+</section>
+
+<footer>BLUEPRINT v1.0 · 2026-08-10 · supersedes v0.2 and Addenda A–D · all dimensions mm</footer>
+</div>
+
+<script>
+(function(){
+"use strict";
+const NS="http://www.w3.org/2000/svg";
+
+/* ---------- constants ---------- */
+const SENS_L=23.5, SENS_S=15.6, PX_L=6000, PX_S=4000;
+const PITCH=SENS_S/PX_S;            // mm/px  = 0.0039
+const F=30, NSTOP=8, COC=0.0067;
+const A3W=420, A3H=297;
+const FPX=F/PITCH;
+
+function geom(ov){
+  const w=(A3W+ov)/2;
+  const m=SENS_S/w;
+  const ppmm=PX_S/w;
+  return {
+    ov, w, m, ppmm,
+    dpi: ppmm*25.4,
+    mp:  A3W*A3H*ppmm*ppmm/1e6,
+    wd:  F*(1+1/m),
+    dof: 2*NSTOP*COC*(1+m)/(m*m),
+    base:A3W-w,
+    cov: SENS_L/m,
+    dz:  Math.pow(F*(1+1/m),2)*0.2/(FPX*(A3W-w))*1000
+  };
+}
+
+/* ---------- svg helpers ---------- */
+function E(p,tag,a){const e=document.createElementNS(NS,tag);
+  for(const k in a) e.setAttribute(k,a[k]); p.appendChild(e); return e;}
+function T(p,x,y,s,o){o=o||{};const e=E(p,"text",{x:x,y:y,
+  "font-family":o.mono===false?"var(--sans)":"var(--mono)",
+  "font-size":o.fs||11, fill:o.fill||"#8d8a7e",
+  "text-anchor":o.an||"start","letter-spacing":o.ls||".02em",
+  transform:o.rot?`rotate(${o.rot} ${x} ${y})`:""});
+  e.textContent=s; return e;}
+function G(p,cls){return E(p,"g",{class:cls||""});}
+
+/* dimension line, horizontal */
+function dimH(p,x1,x2,y,label,col){
+  col=col||"#6a9fb5";
+  E(p,"line",{x1:x1,y1:y,x2:x2,y2:y,stroke:col,"stroke-width":.9});
+  [x1,x2].forEach(x=>E(p,"line",{x1:x,y1:y-4,x2:x,y2:y+4,stroke:col,"stroke-width":.9}));
+  const t=T(p,(x1+x2)/2,y-6,label,{fs:10.5,fill:col,an:"middle"});
+  const bb=(x2-x1);
+  if(bb<60){t.setAttribute("y",y-6);}
+  return t;
+}
+/* dimension line, vertical */
+function dimV(p,y1,y2,x,label,col){
+  col=col||"#6a9fb5";
+  E(p,"line",{x1:x,y1:y1,x2:x,y2:y2,stroke:col,"stroke-width":.9});
+  [y1,y2].forEach(y=>E(p,"line",{x1:x-4,y1:y,x2:x+4,y2:y,stroke:col,"stroke-width":.9}));
+  T(p,x-6,(y1+y2)/2,label,{fs:10.5,fill:col,an:"middle",rot:-90});
+}
+function leader(p,x1,y1,x2,y2,label,col,an){
+  col=col||"#8d8a7e";
+  E(p,"path",{d:`M${x1} ${y1} L${x2} ${y2}`,stroke:col,"stroke-width":.8,fill:"none"});
+  E(p,"circle",{cx:x1,cy:y1,r:1.8,fill:col});
+  T(p,x2+(an==="end"?-4:4),y2+3.5,label,{fs:10.5,fill:col,an:an||"start"});
+}
+function box(p,x,y,w,h,o){o=o||{};
+  return E(p,"rect",{x:x,y:y,width:w,height:h,rx:o.r||2,
+    fill:o.fill||"none",stroke:o.stroke||"#2e2e29","stroke-width":o.sw||1,
+    "stroke-dasharray":o.dash||""});}
+
+/* camera body glyph, pointing down */
+function camera(p,cx,cy,s,label,lab){
+  s=s||1; lab=lab||{};
+  const g=G(p);
+  E(g,"rect",{x:cx-19*s,y:cy-26*s,width:38*s,height:22*s,rx:2,
+    fill:"#2b2b26",stroke:"#f0eee6","stroke-width":1.2});
+  E(g,"rect",{x:cx-8*s,y:cy-32*s,width:16*s,height:6*s,rx:1,
+    fill:"#2b2b26",stroke:"#f0eee6","stroke-width":1});
+  E(g,"path",{d:`M${cx-9*s} ${cy-4*s} L${cx-11*s} ${cy} L${cx+11*s} ${cy} L${cx+9*s} ${cy-4*s} Z`,
+    fill:"#2b2b26",stroke:"#f0eee6","stroke-width":1.2});
+  E(g,"rect",{x:cx-11*s,y:cy-4*s,width:22*s,height:0.1,stroke:"none"});
+  E(g,"ellipse",{cx:cx,cy:cy,rx:11*s,ry:2.4*s,fill:"#0b0b0a",stroke:"#f0eee6","stroke-width":1.2});
+  if(label) T(g,cx+(lab.dx||0),cy+(lab.dy!==undefined?lab.dy:-34*s),label,
+    {fs:10.5,fill:"#f0eee6",an:lab.an||"middle"});
+  return g;
+}
+function lamp(p,x,y,ang,label){
+  const g=G(p);
+  const gg=E(g,"g",{transform:`rotate(${ang} ${x} ${y})`});
+  E(gg,"path",{d:`M${x-13} ${y-8} L${x+13} ${y-8} L${x+9} ${y+8} L${x-9} ${y+8} Z`,
+    fill:"#2b2b26",stroke:"#c2a24a","stroke-width":1.2});
+  E(gg,"line",{x1:x-9,y1:y+8,x2:x+9,y2:y+8,stroke:"#c2a24a","stroke-width":2.5});
+  if(label) T(g,x,y-14,label,{fs:10,fill:"#c2a24a",an:"middle"});
+  return g;
+}
+
+/* ---------- layer state ---------- */
+const LAYERS=[["dims","dimensions",1],["cones","view cones",1],
+  ["light","lighting",1],["notes","annotations",1],["stereo","stereo band",1]];
+const on={}; LAYERS.forEach(l=>on[l[0]]=!!l[2]);
+
+/* ================= SHEET 1 : PLAN ================= */
+function drawPlan(g){
+  const s=document.getElementById("svgPlan"); s.innerHTML="";
+  const K=1.05, OX=175, OY=200;
+  const X=mm=>OX+mm*K, Y=mm=>OY+mm*K;
+  const root=G(s);
+  const over=(g.cov-A3H)/2;              // spare field, mm each side
+  const PB=Y(A3H);                       // page bottom px
+
+  T(root,26,36,"SHEET 1 - PLAN VIEW",{fs:13,fill:"#f0eee6",ls:".08em"});
+  T(root,26,53,"scale 1 : "+(1/K).toFixed(2)+"   ·   looking down   ·   mm",{fs:10.5});
+
+  // ---- sensor footprints
+  if(on.cones){
+    [[0,"#d97757","CAM 1 sensor field"],[A3W-g.w,"#6a9fb5","CAM 2 sensor field"]]
+    .forEach(([x0,col,lb],i)=>{
+      E(root,"rect",{x:X(x0),y:Y(-over),width:g.w*K,height:g.cov*K,
+        fill:hexA(col,.09),stroke:col,"stroke-width":1,"stroke-dasharray":"5 4"});
+      T(root,X(x0+g.w/2),108,lb,{fs:10.5,fill:col,an:"middle"});
+      E(root,"line",{x1:X(x0+g.w/2),y1:114,x2:X(x0+g.w/2),y2:Y(-over)-2,
+        stroke:col,"stroke-width":.7,"stroke-dasharray":"2 4"});
+    });
+  }
+
+  // ---- lamp A (above)
+  if(on.light){
+    T(root,X(A3W/2),140,"LAMP A — high-CRI diffuse bar",{fs:10,fill:"#c2a24a",an:"middle"});
+    E(root,"rect",{x:X(40),y:146,width:(A3W-80)*K,height:11,rx:3,
+      fill:"rgba(194,162,74,.18)",stroke:"#c2a24a","stroke-width":1.1});
+  }
+
+  // ---- page
+  E(root,"rect",{x:X(0),y:Y(0),width:A3W*K,height:A3H*K,fill:"#f5f3ea"});
+  for(let i=1;i<24;i++){
+    const yy=Y(11+i*11.9); if(yy>PB-10) break;
+    E(root,"line",{x1:X(14),y1:yy,x2:X(A3W/2-16),y2:yy,stroke:"#cdc9b8","stroke-width":1.3});
+    E(root,"line",{x1:X(A3W/2+16),y1:yy,x2:X(A3W-14),y2:yy,stroke:"#cdc9b8","stroke-width":1.3});
+  }
+  E(root,"line",{x1:X(A3W/2),y1:Y(0),x2:X(A3W/2),y2:PB,
+    stroke:"#a9a494","stroke-width":1.5,"stroke-dasharray":"6 4"});
+
+  // ---- overlap band
+  if(on.stereo){
+    E(root,"rect",{x:X(A3W/2-g.ov/2),y:Y(-over),width:g.ov*K,height:g.cov*K,
+      fill:"rgba(127,166,106,.32)",stroke:"#7fa66a","stroke-width":1});
+    T(root,X(A3W/2)+8,Y(46),"OVERLAP "+g.ov+" mm",{fs:10,fill:"#4d7a3a",rot:-90});
+  }
+
+  // ---- camera footprints (dark, so they read on white paper)
+  [0,1].forEach(i=>{
+    const cx=X(i===0? g.w/2 : A3W-g.w/2), cy=Y(A3H/2);
+    E(root,"rect",{x:cx-25,y:cy-17,width:50,height:34,rx:2,
+      fill:"none",stroke:"#4a4a42","stroke-width":1.2,"stroke-dasharray":"4 3"});
+    E(root,"circle",{cx:cx,cy:cy,r:10,fill:"none",stroke:"#4a4a42","stroke-width":1.3});
+    E(root,"line",{x1:cx-15,y1:cy,x2:cx+15,y2:cy,stroke:"#4a4a42","stroke-width":.8});
+    E(root,"line",{x1:cx,y1:cy-15,x2:cx,y2:cy+15,stroke:"#4a4a42","stroke-width":.8});
+    E(root,"circle",{cx:cx,cy:cy,r:2.2,fill:"#4a4a42"});
+    T(root,cx,cy-24,"CAM "+(i+1),{fs:10.5,fill:"#4a4a42",an:"middle"});
+    T(root,cx,cy+34,"optical axis ⊥ page",{fs:9.5,fill:"#8a8577",an:"middle"});
+  });
+
+  // ---- spare-field callout inside the strip
+  if(on.notes && on.cones){
+    T(root,X(A3W)-6,Y(-over)+13,over.toFixed(0)+" mm spare field",
+      {fs:9.5,fill:"#8d8a7e",an:"end"});
+  }
+
+  // ---- lamp B (below)
+  let yc=PB+over*K+26;
+  if(on.light){
+    E(root,"rect",{x:X(40),y:yc,width:(A3W-80)*K,height:11,rx:3,
+      fill:"rgba(194,162,74,.18)",stroke:"#c2a24a","stroke-width":1.1});
+    T(root,X(A3W/2),yc+26,"LAMP B — high-CRI diffuse bar",{fs:10,fill:"#c2a24a",an:"middle"});
+    yc+=44;
+  }
+  T(root,X(A3W/2),yc+18,"spine — split line, located from the recovered height minimum",
+    {fs:10,fill:"#8d8a7e",an:"middle"});
+  yc+=18;
+
+  // ---- dimensions
+  if(on.dims){
+    dimH(root,X(0),X(A3W),yc+34,"A3 spread   420");
+    dimH(root,X(0),X(g.w),yc+62,"tile 1   "+g.w.toFixed(0),"#d97757");
+    dimH(root,X(A3W-g.w),X(A3W),yc+88,"tile 2   "+g.w.toFixed(0),"#6a9fb5");
+    dimH(root,X(g.w/2),X(A3W-g.w/2),yc+118,"camera baseline   "+g.base.toFixed(0),"#f0eee6");
+    dimV(root,Y(0),PB,X(0)-30,"297");
+    yc+=118;
+  }
+  if(on.notes){
+    T(root,26,yc+50,"Both cameras parallel and vertical — toe-in 0°. The stitch is a fixed calibrated homography,",
+      {fs:11,fill:"#8d8a7e"});
+    T(root,26,yc+68,"computed once at calibration, not feature matching at runtime.",
+      {fs:11,fill:"#8d8a7e"});
+  }
+}
+
+/* ================= SHEET 2 : FRONT ELEVATION ================= */
+function drawFront(g){
+  const s=document.getElementById("svgFront"); s.innerHTML="";
+  const K=0.9, CX=470, PY=620;
+  const X=mm=>CX+mm*K, Y=mm=>PY-mm*K;
+  const root=G(s);
+  T(root,26,36,"SHEET 2 — FRONT ELEVATION   (viewed along the spine)",
+    {fs:13,fill:"#f0eee6",ls:".08em"});
+  T(root,26,53,"scale 1 : "+(1/K).toFixed(2)+"   ·   mm",{fs:10.5});
+
+  const camY=Y(g.wd), c1=-g.base/2, c2=g.base/2;
+  const railY=124, colX=150;
+
+  // ---- view cones
+  if(on.cones){
+    [[c1,-A3W/2,-A3W/2+g.w,"#d97757"],[c2,A3W/2-g.w,A3W/2,"#6a9fb5"]]
+    .forEach(([cc,a,b,col])=>{
+      E(root,"path",{d:`M${X(cc)} ${camY} L${X(a)} ${Y(0)} L${X(b)} ${Y(0)} Z`,
+        fill:hexA(col,.10),stroke:col,"stroke-width":1,"stroke-dasharray":"5 4"});
+    });
+  }
+  // ---- stereo wedge
+  if(on.stereo){
+    E(root,"path",{d:`M${X(c1)} ${camY} L${X(-g.ov/2)} ${Y(0)} L${X(g.ov/2)} ${Y(0)} L${X(c2)} ${camY} Z`,
+      fill:"rgba(127,166,106,.17)",stroke:"none"});
+    E(root,"rect",{x:X(-g.ov/2),y:Y(0)-3,width:g.ov*K,height:5,fill:"#7fa66a"});
+    leader(root,X(0),Y(0)-4,X(0)+112,Y(0)-118,
+      "stereo band over the gutter — δz ≈ "+g.dz.toFixed(0)+" µm","#7fa66a");
+  }
+
+  // ---- frame: rail + column
+  E(root,"rect",{x:135,y:railY,width:640,height:14,rx:2,
+    fill:"#26261f",stroke:"#6b6b60","stroke-width":1.2});
+  E(root,"rect",{x:colX,y:railY+14,width:26,height:656-railY-14,
+    fill:"#26261f",stroke:"#4a4a42","stroke-width":1});
+  T(root,775,railY+11,"cross rail",{fs:10,fill:"#8d8a7e"});
+  T(root,775,railY+25,"adjustable",{fs:9.5,fill:"#8d8a7e"});
+  T(root,775,railY+38,"baseline & toe-in",{fs:9.5,fill:"#8d8a7e"});
+
+  if(on.dims) dimH(root,X(c1),X(c2),railY+48,"baseline   "+g.base.toFixed(0),"#f0eee6");
+
+  // ---- cameras
+  camera(root,X(c1),camY,1,"CAM 1 · 30 mm f/8",{dy:26,dx:-16,an:"end"});
+  camera(root,X(c2),camY,1,"CAM 2 · 30 mm f/8",{dy:26,dx:16,an:"start"});
+
+  // ---- table stack
+  E(root,"rect",{x:X(-A3W/2-46),y:634,width:(A3W+92)*K,height:22,
+    fill:"#26261f",stroke:"#4a4a42","stroke-width":1});
+  E(root,"rect",{x:X(-A3W/2-6),y:625,width:(A3W+12)*K,height:9,
+    fill:"#2b2b26",stroke:"#8d8a7e","stroke-width":1});
+  E(root,"rect",{x:X(-A3W/2),y:619,width:A3W*K,height:6,fill:"#f5f3ea"});
+  E(root,"rect",{x:X(-A3W/2-8),y:613,width:(A3W+16)*K,height:6,
+    fill:"rgba(190,220,235,.30)",stroke:"#9fc4d4","stroke-width":.9});
+  const lx=X(-A3W/2)-14, rx=X(A3W/2)+16;
+  T(root,lx,615,"3 mm platen",{fs:10,fill:"#9fc4d4",an:"end"});
+  T(root,lx,629,"page",{fs:10,fill:"#8d8a7e",an:"end"});
+  T(root,rx,633,"book block",{fs:10,fill:"#8d8a7e"});
+  T(root,rx,650,"baseboard",{fs:10,fill:"#8d8a7e"});
+
+  // ---- dimensions
+  if(on.dims){
+    dimV(root,camY,Y(0),colX+58,"working distance   "+g.wd.toFixed(0));
+    dimH(root,X(-A3W/2),X(A3W/2),690,"A3 long axis   420");
+    dimH(root,X(-A3W/2),X(-A3W/2+g.w),714,"tile 1   "+g.w.toFixed(0),"#d97757");
+    dimH(root,X(A3W/2-g.w),X(A3W/2),740,"tile 2   "+g.w.toFixed(0),"#6a9fb5");
+  }
+  if(on.notes){
+    T(root,26,782,"Electronic first-curtain shutter on · remote trigger only — nothing touches the frame at exposure time.",
+      {fs:11,fill:"#8d8a7e"});
+    T(root,26,800,"Zoom rings taped: 2 mm of creep silently invalidates intrinsics, homography and DPI all at once.",
+      {fs:11,fill:"#c2a24a"});
+  }
+}
+function hexA(h,a){const r=parseInt(h.substr(1,2),16),gg=parseInt(h.substr(3,2),16),
+  b=parseInt(h.substr(5,2),16);return `rgba(${r},${gg},${b},${a})`;}
+
+/* ================= SHEET 3 : SIDE ELEVATION ================= */
+function drawSide(g){
+  const s=document.getElementById("svgSide"); s.innerHTML="";
+  const K=0.9, CX=470, PY=620;
+  const X=mm=>CX+mm*K, Y=mm=>PY-mm*K;
+  const root=G(s);
+  T(root,26,36,"SHEET 3 — SIDE ELEVATION   (viewed along the long axis)",
+    {fs:13,fill:"#f0eee6",ls:".08em"});
+  T(root,26,53,"scale 1 : "+(1/K).toFixed(2)+"   ·   CAM 2 hidden directly behind CAM 1",{fs:10.5});
+
+  const camY=Y(g.wd), half=g.cov/2, railY=124, colX=150;
+
+  if(on.cones){
+    E(root,"path",{d:`M${X(0)} ${camY} L${X(-half)} ${Y(0)} L${X(half)} ${Y(0)} Z`,
+      fill:"rgba(217,119,87,.10)",stroke:"#d97757","stroke-width":1,"stroke-dasharray":"5 4"});
+    T(root,X(half)+8,Y(0)-42,"field "+g.cov.toFixed(0)+" mm",{fs:10,fill:"#d97757"});
+    T(root,X(half)+8,Y(0)-29,"(297 needed)",{fs:9.5,fill:"#8d8a7e"});
+  }
+
+  // ---- DOF band
+  E(root,"rect",{x:X(-half)-30,y:Y(g.dof/2),width:g.cov*K+60,height:g.dof*K,
+    fill:"rgba(194,162,74,.18)",stroke:"#c2a24a","stroke-width":.9,"stroke-dasharray":"4 3"});
+  leader(root,X(-half)-12,Y(0),X(-half)-46,712,
+    "depth of field ±"+(g.dof/2).toFixed(0)+" mm @ f/8","#c2a24a","end");
+
+  // ---- frame
+  E(root,"rect",{x:135,y:railY,width:640,height:14,rx:2,
+    fill:"#26261f",stroke:"#6b6b60","stroke-width":1.2});
+  E(root,"rect",{x:colX,y:railY+14,width:26,height:656-railY-14,
+    fill:"#26261f",stroke:"#4a4a42","stroke-width":1});
+
+  camera(root,X(0),camY,1,"CAM 1 / CAM 2",{dy:-36});
+
+  // ---- lighting
+  if(on.light){
+    [[-1,"LAMP A"],[1,"LAMP B"]].forEach(([sd,lb])=>{
+      const lxp=X(sd*(half+78)), lyp=Y(190);
+      lamp(root,lxp,lyp,sd*34,lb);
+      [-0.5,0.15,0.8].forEach(k=>{
+        E(root,"line",{x1:lxp,y1:lyp+8,x2:X(sd*half*k),y2:Y(0),
+          stroke:"rgba(194,162,74,.40)","stroke-width":.9,"stroke-dasharray":"3 5"});
+      });
+      E(root,"path",{d:`M${X(sd*46)} ${Y(0)} L${X(sd*(half+150))} ${Y(126)}`,
+        stroke:"rgba(194,162,74,.8)","stroke-width":1.3});
+      const ex=X(sd*(half+150)), ey=Y(126);
+      E(root,"path",{d:`M${ex} ${ey} l${-sd*10} ${-1} m${sd*10} ${1} l${-sd*4} ${9}`,
+        stroke:"rgba(194,162,74,.8)","stroke-width":1.3,fill:"none"});
+    });
+    T(root,X(0),Y(0)-150,"specular lobes reflect clear of both lenses",
+      {fs:10.5,fill:"#c2a24a",an:"middle"});
+  }
+
+  // ---- table stack
+  E(root,"rect",{x:X(-half)-46,y:634,width:g.cov*K+92,height:22,
+    fill:"#26261f",stroke:"#4a4a42","stroke-width":1});
+  E(root,"rect",{x:X(-A3H/2),y:625,width:A3H*K,height:9,
+    fill:"#2b2b26",stroke:"#8d8a7e","stroke-width":1});
+  E(root,"rect",{x:X(-A3H/2),y:619,width:A3H*K,height:6,fill:"#f5f3ea"});
+  E(root,"rect",{x:X(-A3H/2-8),y:613,width:(A3H+16)*K,height:6,
+    fill:"rgba(190,220,235,.30)",stroke:"#9fc4d4","stroke-width":.9});
+
+  if(on.dims){
+    dimV(root,camY,Y(0),colX+58,"working distance   "+g.wd.toFixed(0));
+    dimH(root,X(-A3H/2),X(A3H/2),690,"A3 short axis   297");
+    dimV(root,Y(190),Y(0),X(half+170),"lamp height  190","#c2a24a");
+  }
+  if(on.notes){
+    T(root,26,742,"The platen flattens the page — which collapses the depth-of-field problem and removes the need for",
+      {fs:11,fill:"#8d8a7e"});
+    T(root,26,760,"3D dewarping in the same stroke. It is the highest-leverage €15 in the build.",
+      {fs:11,fill:"#8d8a7e"});
+    T(root,26,786,"Cross-polarisation (film on the lamps + polariser on the lenses, ~€20) is the fallback if reflections persist —",
+      {fs:11,fill:"#c2a24a"});
+    T(root,26,804,"purely optical, no electronics.",{fs:11,fill:"#c2a24a"});
+  }
+}
+
+/* ================= SHEET 4 : SYSTEM ================= */
+function drawSys(){
+  const s=document.getElementById("svgSys"); s.innerHTML="";
+  const root=G(s);
+  T(root,26,36,"SHEET 4 — CAPTURE ARCHITECTURE",{fs:13,fill:"#f0eee6",ls:".08em"});
+
+  function node(x,y,w,h,title,lines,col){
+    E(root,"rect",{x:x,y:y,width:w,height:h,rx:4,fill:hexA(col,.07),
+      stroke:col,"stroke-width":1.2});
+    T(root,x+13,y+22,title,{fs:12,fill:"#f0eee6"});
+    lines.forEach((l,i)=>T(root,x+13,y+40+i*15,l,{fs:10.5,fill:"#8d8a7e"}));
+  }
+  function link(x1,y1,x2,y2,label,col,lx,ly){
+    col=col||"#4a4a42";
+    E(root,"path",{d:`M${x1} ${y1} L${x2} ${y2}`,stroke:col,"stroke-width":1.4,fill:"none"});
+    if(label) T(root,lx!==undefined?lx:(x1+x2)/2,ly!==undefined?ly:(y1+y2)/2-5,
+      label,{fs:9.5,fill:col,an:"middle"});
+  }
+
+  node(40,86,224,96,"Acer Nitro V15",["RTX 5060 · 8 GB VRAM",
+    "orchestration · batch pipeline","issues the sequence counter"],"#d97757");
+  node(346,104,190,60,"Gigabit switch",["wired LAN — no Wi-Fi"],"#8d8a7e");
+
+  node(618,34,252,88,"Raspberry Pi 5  #1",["8 GB · Pi OS Lite 64-bit",
+    "AI HAT+ Hailo-8 · 26 TOPS","FastAPI + python-gphoto2"],"#6a9fb5");
+  node(618,146,252,58,"Sony A6000  #1",["USB 2.0 PTP  ·  left tile"],"#f0eee6");
+
+  node(618,248,252,88,"Raspberry Pi 5  #2",["8 GB · Pi OS Lite 64-bit",
+    "AI HAT+ Hailo-8 · 26 TOPS","live QA on its own half"],"#6a9fb5");
+  node(618,360,252,58,"Sony A6000  #2",["USB 2.0 PTP  ·  right tile"],"#f0eee6");
+
+  link(264,134,346,134);
+  link(536,134,618,78,"LAN","#6a9fb5",578,96);
+  link(536,134,618,292,"LAN","#6a9fb5",572,220);
+  link(744,122,744,146,"USB","#8d8a7e",772,138);
+  link(744,336,744,360,"USB","#8d8a7e",772,352);
+
+  T(root,40,232,"CAMERA-SIDE SETTINGS — non-negotiable",{fs:11,fill:"#c2a24a",ls:".06em"});
+  ["USB Connection → PC Remote","Auto Review → Off","Mode dial → M",
+   "Pre-AF → Off","Focus → DMF","capturetarget → card (set explicitly)"]
+   .forEach((l,i)=>T(root,40,254+i*17,"· "+l,{fs:11,fill:"#8d8a7e"}));
+
+  T(root,40,382,"THROUGHPUT — 24 MB per ARW, PTP ~15 MB/s",{fs:11,fill:"#c2a24a",ls:".06em"});
+  [["standard · 1 frame","~2 s","2–3 s per spread"],
+   ["clean · 3 frames","~6 s","faded or very fine print"],
+   ["max · 9 frames","~15–22 s","rare pages only"]]
+   .forEach(([a,b,c],i)=>{
+     T(root,40,404+i*17,a,{fs:11,fill:"#f0eee6"});
+     T(root,200,404+i*17,b,{fs:11,fill:"#8d8a7e"});
+     T(root,282,404+i*17,c,{fs:11,fill:"#8d8a7e"});
+   });
+  T(root,40,472,"Sustainable burst = transfer time ≤ page-turn time, or the queue grows without bound.",
+    {fs:11,fill:"#c2a24a"});
+}
+
+/* ================= SHEET 5 : PIPELINE ================= */
+function drawPipe(){
+  const s=document.getElementById("svgPipe"); s.innerHTML="";
+  const root=G(s);
+  T(root,26,36,"SHEET 5 — PROCESSING PIPELINE",{fs:13,fill:"#f0eee6",ls:".08em"});
+  T(root,26,53,"deterministic and metric on the left of the split · derivative on the right",{fs:10.5});
+
+  const stages=[
+    ["capture","paired by sequence counter"],
+    ["ingest & pair","burst merge if profile > 1"],
+    ["per-camera correction","distortion · flat-field · colour"],
+    ["rectify + stitch","fixed homography, blend the overlap"],
+    ["deskew & crop","against the recovered page border"],
+    ["split spread","at the height-minimum spine"],
+    ["background normalise","low-pass the paper, divide out"]
+  ];
+  const BW=118, BH=92, GAP=16, ROW=[76,196];
+  stages.forEach((st,i)=>{
+    const r=i<3?0:1, c=i<3?i:i-3;
+    const x=40+c*(BW+GAP), y=ROW[r];
+    E(root,"rect",{x:x,y:y,width:BW,height:BH,rx:4,
+      fill:"rgba(106,159,181,.08)",stroke:"#6a9fb5","stroke-width":1.1});
+    const ny=wrapT(root,st[0],x+9,y+19,BW-18,11.5,"#f0eee6");
+    wrapT(root,st[1],x+9,ny+4,BW-18,9.5,"#8d8a7e");
+    if(i<2||(i>=3&&i<6)){
+      E(root,"path",{d:`M${x+BW} ${y+BH/2} l14 0 m-5 -4 l5 4 l-5 4`,
+        stroke:"#4a4a42","stroke-width":1.2,fill:"none"});
+    }
+  });
+  // wrap connector row1 -> row2
+  const endX=40+2*(BW+GAP)+BW/2;
+  E(root,"path",{d:`M${endX} ${ROW[0]+BH} L${endX} ${ROW[0]+BH+18} L${99} ${ROW[0]+BH+18} L${99} ${ROW[1]}`,
+    stroke:"#4a4a42","stroke-width":1.2,fill:"none"});
+  E(root,"path",{d:`M${99} ${ROW[1]} l-4 -6 m4 6 l4 -6`,stroke:"#4a4a42","stroke-width":1.2,fill:"none"});
+
+  // split
+  const lastX=40+3*(BW+GAP)+BW/2, sy=ROW[1]+BH;
+  E(root,"path",{d:`M${lastX} ${sy} L${lastX} ${sy+26} M${230} ${sy+26} L${700} ${sy+26} `+
+    `M${230} ${sy+26} L${230} ${sy+48} M${700} ${sy+26} L${700} ${sy+48}`,
+    stroke:"#4a4a42","stroke-width":1.2,fill:"none"});
+
+  const ty=sy+48;
+  E(root,"rect",{x:90,y:ty,width:280,height:104,rx:5,
+    fill:"rgba(127,166,106,.09)",stroke:"#7fa66a","stroke-width":1.3});
+  T(root,106,ty+26,"ARCHIVAL MASTER",{fs:12,fill:"#7fa66a",ls:".05em"});
+  ["native ~"+"462 DPI · lossless TIFF","colour-managed, stitched, cropped",
+   "every pixel traceable to a photon"].forEach((l,i)=>
+   T(root,106,ty+48+i*16,l,{fs:10.5,fill:"#8d8a7e"}));
+
+  E(root,"rect",{x:560,y:ty,width:280,height:104,rx:5,
+    fill:"rgba(217,119,87,.09)",stroke:"#d97757","stroke-width":1.3});
+  T(root,576,ty+26,"ACCESS COPY",{fs:12,fill:"#d97757",ls:".05em"});
+  ["2× SR, tiled 512–1024 px","PaddleOCR + Tesseract 5",
+   "PDF/A-2b, invisible text layer"].forEach((l,i)=>
+   T(root,576,ty+48+i*16,l,{fs:10.5,fill:"#8d8a7e"}));
+
+  T(root,465,ty+68,"never",{fs:11.5,fill:"#c2a24a",an:"middle"});
+  T(root,465,ty+84,"conflate",{fs:11.5,fill:"#c2a24a",an:"middle"});
+  T(root,465,ty+100,"the two",{fs:11.5,fill:"#c2a24a",an:"middle"});
+
+  const qy=ty+132;
+  E(root,"rect",{x:90,y:qy,width:750,height:78,rx:5,
+    fill:"none",stroke:"#2e2e29","stroke-width":1,"stroke-dasharray":"4 4"});
+  T(root,106,qy+24,"LIVE QA — on the Hailo nodes, ~200 ms per half",{fs:11.5,fill:"#f0eee6"});
+  T(root,106,qy+44,"segmentation · boundary check · blur score · dewarped thumbnail",
+    {fs:10.5,fill:"#8d8a7e"});
+  T(root,106,qy+63,"Bad captures surface immediately, not 400 pages later — and the laptop GPU stays free for batch work.",
+    {fs:10.5,fill:"#8d8a7e"});
+}
+function wrapT(p,str,x,y,w,fs,fill){
+  const words=String(str).split(" ");
+  const per=Math.max(4,Math.floor(w/(fs*0.60)));
+  let line="",ly=y;
+  words.forEach(wd=>{
+    if(line && (line+" "+wd).length>per){T(p,x,ly,line,{fs:fs,fill:fill});line=wd;ly+=fs+3;}
+    else line=line?line+" "+wd:wd;
+  });
+  if(line){T(p,x,ly,line,{fs:fs,fill:fill});}
+  return ly+fs+4;
+}
+
+/* ================= tables & readouts ================= */
+function drawNumbers(g){
+  const t=document.getElementById("tbl");
+  t.querySelectorAll("tr:not(:first-child)").forEach(r=>r.remove());
+  [10,20,30,40].forEach(ov=>{
+    const q=geom(ov);
+    const tr=document.createElement("tr");
+    if(ov===g.ov) tr.className="hi";
+    tr.innerHTML=`<td>${ov} mm</td><td class="n">${q.w.toFixed(0)}</td>
+      <td class="n">${q.dpi.toFixed(0)}</td><td class="n">${q.mp.toFixed(1)} MP</td>
+      <td class="n">${q.wd.toFixed(0)}</td><td class="n">${q.dof.toFixed(1)}</td>
+      <td class="n">${q.dz.toFixed(0)} µm</td>`;
+    t.appendChild(tr);
+  });
+  const cz=document.createElement("tr");
+  cz.innerHTML=`<td style="color:var(--dim)">CZUR ET Ultra</td><td class="n">—</td>
+    <td class="n" style="color:var(--dim)">441</td>
+    <td class="n" style="color:var(--dim)">39.8 MP</td>
+    <td class="n">—</td><td class="n">—</td><td class="n">—</td>`;
+  t.appendChild(cz);
+
+  document.getElementById("dM").textContent=g.m.toFixed(4);
+  document.getElementById("dWD").textContent=g.wd.toFixed(0)+" mm";
+  document.getElementById("dCov").textContent=g.cov.toFixed(0)+" mm";
+  document.getElementById("dDOF").textContent=g.dof.toFixed(1)+" mm";
+  document.getElementById("dDZ").textContent=g.dz.toFixed(1)+" µm";
+}
+
+function readouts(g){
+  const beats=g.dpi>=441, beatsMp=g.mp>=39.8;
+  document.getElementById("ro").innerHTML=[
+    ["DPI",g.dpi.toFixed(0),beats?"good":"warn"],
+    ["spread px",g.mp.toFixed(1)+" MP",beatsMp?"good":"warn"],
+    ["tile width",g.w.toFixed(0)+" mm",""],
+    ["working dist",g.wd.toFixed(0)+" mm",""],
+    ["DOF @ f/8","±"+(g.dof/2).toFixed(0)+" mm",""],
+    ["baseline",g.base.toFixed(0)+" mm",""],
+    ["stereo δz",g.dz.toFixed(0)+" µm",""]
+  ].map(([k,v,c])=>`<div class="ro"><div class="v ${c}">${v}</div><div class="k">${k}</div></div>`).join("");
+  document.getElementById("bDpi").textContent=g.dpi.toFixed(0)+" DPI / "+g.mp.toFixed(1)+" MP";
+}
+
+/* ================= wiring ================= */
+const SHEETS=[["plan","1 · plan"],["front","2 · front elev"],["side","3 · side elev"],
+  ["system","4 · system"],["pipeline","5 · pipeline"],["numbers","6 · numbers"]];
+let cur="plan";
+
+const nav=document.getElementById("nav");
+SHEETS.forEach(([id,lab])=>{
+  const b=document.createElement("button"); b.textContent=lab; b.dataset.t=id;
+  b.onclick=()=>{cur=id;render();}; nav.appendChild(b);
+});
+const lay=document.getElementById("layers");
+LAYERS.forEach(([id,lab,d])=>{
+  const l=document.createElement("label");
+  l.innerHTML=`<input type="checkbox" ${d?"checked":""} data-l="${id}"> ${lab}`;
+  l.querySelector("input").onchange=e=>{on[id]=e.target.checked;render();};
+  lay.appendChild(l);
+});
+const ov=document.getElementById("ov");
+ov.oninput=()=>{document.getElementById("ovv").textContent=ov.value;render();};
+
+function render(){
+  const g=geom(+ov.value);
+  readouts(g);
+  document.querySelectorAll("nav button").forEach(b=>b.classList.toggle("on",b.dataset.t===cur));
+  document.querySelectorAll(".sheet").forEach(x=>x.classList.toggle("on",x.dataset.s===cur));
+  lay.style.display=(cur==="plan"||cur==="front"||cur==="side")?"flex":"none";
+  if(cur==="plan")drawPlan(g);
+  if(cur==="front")drawFront(g);
+  if(cur==="side")drawSide(g);
+  if(cur==="system")drawSys();
+  if(cur==="pipeline")drawPipe();
+  if(cur==="numbers")drawNumbers(g);
+}
+render();
+})();
+</script>
+</body>
+</html>
