@@ -223,9 +223,16 @@ case "$OS_CODENAME" in
 esac
 
 if command -v gvfsd >/dev/null 2>&1 || dpkg-query -W -f='${db:Status-Status}' gvfs 2>/dev/null | grep -q installed; then
-    warn "gvfs is installed -- this is a desktop image, not Lite.  gvfs-gphoto2-volume-monitor
-      claims the camera the instant it enumerates.  Step 7 masks it, but Lite is
-      the supported base."
+    warn "gvfs is installed -- this is a Desktop image, not Lite.  What actually
+      claims the camera is pcmanfm: Pi OS ships mount_on_startup=1 and
+      mount_removable=1, so the desktop auto-mounts the body and gvfsd-gphoto2
+      holds the USB interface.  Step 7 applies three independent mitigations, but
+      Lite remains the supported base.  See docs/node-setup.md."
+    if [[ "$(systemctl get-default 2>/dev/null)" == "graphical.target" ]]; then
+        warn "default target is graphical.target, so a desktop session (and gvfs) starts
+      at every boot.  'sudo raspi-config nonint do_boot_behaviour B2' makes this
+      node boot to a console and removes the whole class of problem."
+    fi
 else
     ok "no gvfs (Lite image, as specified)"
 fi
@@ -443,6 +450,21 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="054c", MODE="0660", GROUP="plugdev"
 # Stop libmtp's hwdb from tagging the body as a media player.  Nothing on Lite
 # acts on the tag, but it costs nothing to keep the device unclaimed.
 SUBSYSTEM=="usb", ATTR{idVendor}=="054c", ENV{ID_MTP_DEVICE}="", ENV{ID_MEDIA_PLAYER}=""
+
+# Hide the body from gvfs without hiding it from us.
+#
+# gvfs's camera monitor decides a USB device is a camera by one test only:
+# g_udev_device_has_property(d, "ID_GPHOTO2").  The property is set by
+# libgphoto2's own 60- rule and hwdb; clearing it here (a later rule wins)
+# makes gvfs ignore the body entirely, so nothing ever auto-mounts it and
+# gvfsd-gphoto2 never claims the interface.
+#
+# libgphoto2 is unaffected: it enumerates with libusb directly and never reads
+# udev, so python-gphoto2 still finds the camera.  Clearing an ENV also does
+# not undo the MODE/GROUP the 60- rule already applied.
+#
+# Scoped to Sony so any other camera on the bench behaves normally.
+SUBSYSTEM=="usb", ATTR{idVendor}=="054c", ENV{ID_GPHOTO2}=""
 EOF
 
 if write_if_changed "$UDEV_RULE_PATH" "$UDEV_RULE"; then
@@ -460,16 +482,34 @@ else
     changed "added $NODE_USER to plugdev (takes effect on next login / service restart)"
 fi
 
-# Defensive: nothing on Lite claims a PTP camera, but if someone later
-# apt-installs a desktop fragment these are what would.
-for unit in gvfs-gphoto2-volume-monitor.service gvfs-mtp-volume-monitor.service ModemManager.service; do
-    if systemctl list-unit-files "$unit" >/dev/null 2>&1 && \
-       systemctl list-unit-files --no-legend "$unit" 2>/dev/null | grep -q .; then
-        if systemctl mask "$unit" >/dev/null 2>&1; then
-            changed "masked $unit"
-        fi
+# Mask the gvfs volume monitors -- at the right scope, which is the whole point.
+#
+# `systemctl mask gvfs-gphoto2-volume-monitor` (system scope) DOES NOTHING.
+# The unit ships only as /usr/lib/systemd/user/..., it has no [Install]
+# section, and it is started by D-Bus activation delegated to `systemd --user`
+# through SystemdService= in its .service file.  A system-scope mask writes a
+# dangling symlink into /etc/systemd/system that the user manager never reads:
+# the command succeeds, and the camera still gets claimed.
+#
+# --global writes to /etc/systemd/user, which every user's manager does read.
+# Harmless where gvfs is not installed, which is why it runs unconditionally --
+# it is the thing that makes the node survive someone apt-installing a desktop
+# fragment later.
+for unit in gvfs-gphoto2-volume-monitor.service gvfs-mtp-volume-monitor.service; do
+    if [[ "$(readlink -f "/etc/systemd/user/$unit" 2>/dev/null)" == "/dev/null" ]]; then
+        same "$unit already masked for all users"
+    elif systemctl --global mask "$unit" >/dev/null 2>&1; then
+        changed "masked $unit for all users (--global)"
+    else
+        warn "could not mask $unit"
     fi
 done
+
+if systemctl list-unit-files --no-legend ModemManager.service 2>/dev/null | grep -q .; then
+    if systemctl mask ModemManager.service >/dev/null 2>&1; then
+        changed "masked ModemManager.service"
+    fi
+fi
 
 if [[ $DO_USB_MAX_CURRENT -eq 1 ]]; then
     if command -v raspi-config >/dev/null 2>&1; then
