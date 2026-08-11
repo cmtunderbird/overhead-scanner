@@ -89,8 +89,12 @@ fastest path is to fetch just the two files:
 sudo apt update && sudo apt install -y git
 git clone https://github.com/cmtunderbird/overhead-scanner
 cd overhead-scanner
+chmod +x scripts/*.sh
 sudo ./scripts/provision-node.sh --role 0 --ip 10.10.0.10/24 --ntp 10.10.0.1
 ```
+
+`chmod +x` because a file that arrives through the GitHub web API loses its
+executable bit. Harmless if it is already set.
 
 `--ntp` is the laptop. The camera segment has no route to the internet and the
 **Pi 5 ships with no RTC battery fitted**, so without it every capture gets a
