@@ -1,9 +1,10 @@
 """
 Real camera backend: libgphoto2 via python-gphoto2.
 
-Bindings, not the `gphoto2` command-line tool.  Every CLI invocation
-re-initialises the USB session, which costs about a second and makes
-burst capture impossible.
+Bindings, not the `gphoto2` command-line tool -- but see point 2: the
+original reason given for that choice turned out to be exactly backwards
+on real hardware, and the session model here reflects what was measured
+rather than what was assumed.
 
 Four things will cost you an evening each if you skip them:
 
@@ -21,8 +22,22 @@ Four things will cost you an evening each if you skip them:
 
    In the last two the fix is membership of `plugdev`, not gvfs.
 
-2. The A6000 drops its PTP session when idle.  This is normal.  Reconnect
-   on failure -- `capture_with_retry` in the base class does it for you.
+2. **A PTP session survives roughly one capture.**  Measured on the
+   ILCE-6000: one persistent session managed 0 of 3 captures, while a
+   fresh session per frame managed 3 of 3 at 3177 / 3098 / 3021 ms.
+   Nothing physical changed between the two runs.  See
+   `ptp-session-lifetime.md`.
+
+   This inverts the reasoning that chose bindings over the CLI --
+   *"every CLI invocation re-initialises the USB session, which costs
+   about a second"*.  That re-initialisation is not overhead; it is the
+   thing that makes capture work, and the feared cost does not appear in
+   the numbers.  Bindings are still right; the session lifetime was not.
+   Hence `session_per_capture=True` by default.
+
+   The session also drops when idle.  `capture_with_retry` in the base
+   class recovers -- but only for codes `_session_lost_codes()` reports,
+   which is why `GP_ERROR` (-1) had to be added to it.
 
 3. **`capturetarget` does not exist on every body.**  On the ILCE-6000 it
    is absent from the PTP config tree entirely -- not defaulted, absent.
@@ -52,6 +67,9 @@ mode dial -> M, Pre-AF -> Off, Focus -> DMF.
 
 from __future__ import annotations
 
+import pathlib
+import shutil
+import tempfile
 import time
 
 from .base import (
@@ -82,11 +100,23 @@ class GPhotoCamera(CameraBackend):
     SETTING_KEYS = ("iso", "shutterspeed", "f-number")
 
     def __init__(self, camera_id: str = "cam0", tile_index: int = 0,
-                 *, keep_on_camera: bool | None = None):
+                 *, keep_on_camera: bool | None = None,
+                 session_per_capture: bool = True):
         super().__init__(camera_id, tile_index)
         self._camera = None
         self._gp = None
         self._config_paths: dict[str, str] = {}
+        #: Open a fresh PTP session for every frame. Measured on ILCE-6000:
+        #: a persistent session manages exactly one capture and the second
+        #: fails. See `ptp-session-lifetime.md`. Set False only to
+        #: reproduce that.
+        self.session_per_capture = session_per_capture
+        #: Frames downloaded during capture, keyed by file_id. Needed
+        #: because a body with no card keeps the frame in volatile storage
+        #: tied to the session -- close the session and it is gone, so a
+        #: deferred read_file() would find nothing.
+        self._cache: dict[str, pathlib.Path] = {}
+        self._cache_dir: pathlib.Path | None = None
         #: False when the config tree could not be read at all.  Without
         #: this, "probe failed" and "body supports nothing" are the same
         #: empty dict, and the more serious diagnosis loses.
@@ -100,6 +130,23 @@ class GPhotoCamera(CameraBackend):
     # -- lifecycle ---------------------------------------------------------
 
     def connect(self) -> None:
+        self._open_session()
+        self.last_error = ""
+        self._config_paths = self._probe_config()
+        self._resolve_capture_target()
+        if self._cache_dir is None:
+            self._cache_dir = pathlib.Path(
+                tempfile.mkdtemp(prefix=f"scanner-{self.camera_id}-"))
+
+    def _open_session(self) -> None:
+        """
+        Open a PTP session. Init only -- deliberately no config probe.
+
+        `connect()` probes once; every later reopen reuses that map. On a
+        body that manages roughly one capture per session, spending extra
+        PTP round-trips re-discovering capabilities we already know is
+        exactly the wrong trade.
+        """
         try:
             import gphoto2 as gp
         except ImportError as e:  # pragma: no cover
@@ -138,9 +185,19 @@ class GPhotoCamera(CameraBackend):
             raise CameraError(f"{self.camera_id}: {e}") from e
 
         self._camera = cam
-        self.last_error = ""
-        self._config_paths = self._probe_config()
-        self._resolve_capture_target()
+
+    def _reopen(self) -> None:
+        """
+        Close and reopen the PTP session, keeping the probed capability
+        map. This is the fix for the one-capture-per-session limit.
+        """
+        paths, ok = self._config_paths, self._probe_ok
+        try:
+            self.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+        self._open_session()
+        self._config_paths, self._probe_ok = paths, ok
 
     def disconnect(self) -> None:
         if self._camera is not None:
@@ -336,56 +393,117 @@ class GPhotoCamera(CameraBackend):
 
     # -- capture -----------------------------------------------------------
 
+    def _session_lost_codes(self) -> tuple[int, ...]:
+        """
+        Error codes that mean "this session is finished, open a new one".
+
+        `GP_ERROR` (-1, "Unspecified error") belongs here: it is the
+        *observed* death on the ILCE-6000 after one capture. Without it,
+        `capture_with_retry` in the base class never fires for the only
+        failure that actually occurs.
+        """
+        gp = self._gp
+        return (
+            getattr(gp, "GP_ERROR_IO", -7),
+            getattr(gp, "GP_ERROR_IO_USB_FIND", -52),
+            getattr(gp, "GP_ERROR", -1),
+        )
+
     def capture(self, seq: int, frames: int = 1) -> list[CapturedFile]:
-        cam, gp = self._require()
+        self._require()
         out: list[CapturedFile] = []
         with self._lock:
             for f in range(frames):
-                t0 = time.perf_counter()
-                try:
-                    path = cam.capture(gp.GP_CAPTURE_IMAGE)
-                except gp.GPhoto2Error as e:
-                    if e.code in (gp.GP_ERROR_IO, gp.GP_ERROR_IO_USB_FIND):
-                        raise CameraDisconnected(
-                            f"{self.camera_id}: session lost during capture: {e}"
-                        ) from e
-                    raise CameraError(f"{self.camera_id}: capture failed: {e}") from e
-
-                fid = f"{path.folder.rstrip('/')}/{path.name}"
-                try:
-                    info = cam.file_get_info(path.folder, path.name)
-                    size = int(info.file.size)
-                except Exception:  # noqa: BLE001
-                    size = -1
-
-                self.frames_captured += 1
-                out.append(
-                    CapturedFile(
-                        file_id=fid,
-                        camera_id=self.camera_id,
-                        seq=seq,
-                        frame_index=f,
-                        size_bytes=size,
-                        latency_s=round(time.perf_counter() - t0, 3),
-                        path=fid,
-                    )
-                )
+                if self.session_per_capture:
+                    self._reopen()
+                out.append(self._shoot(seq, f))
         return out
 
-    def read_file(self, file_id: str) -> bytes:
+    def _shoot(self, seq: int, frame_index: int) -> CapturedFile:
         cam, gp = self._require()
-        folder, _, name = file_id.rpartition("/")
+        t0 = time.perf_counter()
+        try:
+            path = cam.capture(gp.GP_CAPTURE_IMAGE)
+        except gp.GPhoto2Error as e:
+            if e.code in self._session_lost_codes():
+                raise CameraDisconnected(
+                    f"{self.camera_id}: session lost during capture: {e}"
+                ) from e
+            raise CameraError(f"{self.camera_id}: capture failed: {e}") from e
+
+        fid = f"{path.folder.rstrip('/')}/{path.name}"
+        try:
+            info = cam.file_get_info(path.folder, path.name)
+            size = int(info.file.size)
+        except Exception:  # noqa: BLE001
+            size = -1
+
+        # A body with no card holds the frame only for the life of THIS
+        # session. Closing the session discards it, so a deferred
+        # read_file() would find nothing. Pull it now.
+        if not self.keep_on_camera:
+            try:
+                data = self._download(path.folder, path.name)
+                size = len(data)
+                if self._cache_dir is not None:
+                    dest = self._cache_dir / f"{seq:06d}-{frame_index}-{path.name}"
+                    dest.write_bytes(data)
+                    self._cache[fid] = dest
+                try:
+                    cam.file_delete(path.folder, path.name)
+                except Exception:  # noqa: BLE001
+                    pass
+            except CameraError as e:
+                self.last_error = str(e)
+
+        self.frames_captured += 1
+        return CapturedFile(
+            file_id=fid,
+            camera_id=self.camera_id,
+            seq=seq,
+            frame_index=frame_index,
+            size_bytes=size,
+            latency_s=round(time.perf_counter() - t0, 3),
+            path=fid,
+        )
+
+    def _download(self, folder: str, name: str) -> bytes:
+        cam, gp = self._require()
         try:
             cam_file = cam.file_get(folder or "/", name, gp.GP_FILE_TYPE_NORMAL)
-            data = memoryview(cam_file.get_data_and_size()).tobytes()
+            return memoryview(cam_file.get_data_and_size()).tobytes()
         except gp.GPhoto2Error as e:
-            raise CameraError(f"{self.camera_id}: download failed for {file_id}: {e}") from e
+            raise CameraError(
+                f"{self.camera_id}: download failed for {folder}/{name}: {e}") from e
+
+    def read_file(self, file_id: str) -> bytes:
+        # Frames pulled during capture are served from the local cache.
+        # On a body with no card this is the only copy that still exists.
+        cached = self._cache.get(file_id)
+        if cached is not None and cached.exists():
+            return cached.read_bytes()
+
+        cam, gp = self._require()
+        folder, _, name = file_id.rpartition("/")
+        data = self._download(folder, name)
         if not self.keep_on_camera:
             try:
                 cam.file_delete(folder or "/", name)
             except Exception:  # noqa: BLE001
                 pass
         return data
+
+    def release_cache(self) -> None:
+        """Drop cached frames once the orchestrator has taken them."""
+        for p in self._cache.values():
+            try:
+                p.unlink(missing_ok=True)
+            except Exception:  # noqa: BLE001
+                pass
+        self._cache.clear()
+        if self._cache_dir is not None:
+            shutil.rmtree(self._cache_dir, ignore_errors=True)
+            self._cache_dir = None
 
     def preview(self) -> bytes:
         cam, gp = self._require()
