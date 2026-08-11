@@ -21,7 +21,9 @@ import types
 
 import pytest
 
-from scanner.node.backends.base import CameraSettings, ConfigUnsupported
+from scanner.node.backends.base import (
+    CameraDisconnected, CameraSettings, ConfigUnsupported,
+)
 
 
 # --------------------------------------------------------------------------
@@ -108,9 +110,15 @@ class FakeCamera:
         self.cfg = None
         self.deleted: list[str] = []
         self.on_camera: list[str] = []
+        self.inits = 0
+        self.session_shots = 0
+        #: Reproduce the measured ILCE-6000 behaviour: a session manages
+        #: this many captures, then every further one fails.
+        self.captures_per_session = None
 
     def init(self):
-        pass
+        self.inits += 1
+        self.session_shots = 0
 
     def exit(self):
         pass
@@ -122,6 +130,11 @@ class FakeCamera:
         self.cfg = cfg
 
     def capture(self, _kind):
+        if (self.captures_per_session is not None
+                and self.session_shots >= self.captures_per_session):
+            # This is the real error the body returns: -1, "Unspecified".
+            raise FakeError("Unspecified error", code=-1)
+        self.session_shots += 1
         self.on_camera.append(FakePath.name)
         return FakePath()
 
@@ -150,6 +163,7 @@ def install_fake(monkeypatch, *, capturetarget: bool):
     mod.GP_ERROR_IO_USB_CLAIM = -53
     mod.GP_ERROR_IO = -7
     mod.GP_ERROR_IO_USB_FIND = -52
+    mod.GP_ERROR = -1
     mod.GP_CAPTURE_IMAGE = 0
     mod.GP_FILE_TYPE_NORMAL = 1
     monkeypatch.setitem(sys.modules, "gphoto2", mod)
@@ -222,10 +236,12 @@ def test_frames_are_deleted_when_the_body_has_no_card(a6000):
     dev, cam = a6000
     assert dev.keep_on_camera is False
     files = dev.capture(seq=1)
-    assert cam.on_camera, "frame should exist on the body before download"
-    dev.read_file(files[0].file_id)
+    # Pulled during capture, not deferred: the frame lives only as long as
+    # the session that made it, and that session is about to close.
     assert cam.deleted == ["capt_DSC00001.ARW"]
     assert cam.on_camera == [], "frame must not be left on a body with no card"
+    # And it is still readable afterwards, from the local cache.
+    assert dev.read_file(files[0].file_id) == b"x" * 32
 
 
 def test_frames_are_kept_when_the_body_does_have_a_card(with_card):
@@ -242,6 +258,73 @@ def test_explicit_override_is_honoured(monkeypatch):
     dev = GPhotoCamera("cam0", 0, keep_on_camera=True)
     dev.connect()
     assert dev.keep_on_camera is True
+
+
+# --------------------------------------------------------------------------
+# one capture per PTP session
+# --------------------------------------------------------------------------
+
+def test_a_fresh_session_is_opened_for_every_frame(a6000):
+    dev, cam = a6000
+    before = cam.inits
+    dev.capture(seq=1, frames=3)
+    assert cam.inits - before == 3, "each frame must get its own PTP session"
+
+
+def test_three_frames_succeed_against_a_one_capture_per_session_body(a6000):
+    """
+    The measured failure, reproduced: 0/3 on a persistent session,
+    3/3 with a fresh session per frame. Nothing else differs.
+    """
+    dev, cam = a6000
+    cam.captures_per_session = 1
+
+    files = dev.capture(seq=1, frames=3)
+    assert len(files) == 3
+    assert dev.frames_captured == 3
+
+
+def test_persistent_session_still_fails_on_such_a_body(a6000):
+    """The control. If this ever passes, the test above proves nothing."""
+    dev, cam = a6000
+    cam.captures_per_session = 1
+    dev.session_per_capture = False
+
+    with pytest.raises(CameraDisconnected):
+        dev.capture(seq=1, frames=3)
+
+
+def test_unspecified_error_counts_as_a_lost_session(a6000):
+    """
+    GP_ERROR (-1) is the observed death. Before it was listed, capture()
+    raised a plain CameraError and `capture_with_retry` -- the base
+    class's only recovery path -- never fired for the one failure that
+    actually happens.
+    """
+    dev, cam = a6000
+    cam.captures_per_session = 0
+    dev.session_per_capture = False
+
+    with pytest.raises(CameraDisconnected):
+        dev.capture(seq=1)
+
+
+def test_capture_with_retry_now_recovers(a6000):
+    dev, cam = a6000
+    cam.captures_per_session = 1
+    dev.session_per_capture = False   # force the failure...
+    calls = {"n": 0}
+    real_reconnect = dev.reconnect
+
+    def reconnect():
+        calls["n"] += 1
+        dev.session_per_capture = True   # ...and let recovery fix it
+        real_reconnect()
+
+    dev.reconnect = reconnect
+    dev.capture(seq=1)                   # primes the session
+    files = dev.capture_with_retry(seq=2, frames=1)
+    assert files and calls["n"] >= 1, "the base-class retry must engage"
 
 
 # --------------------------------------------------------------------------
