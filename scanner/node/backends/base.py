@@ -170,6 +170,17 @@ class CameraBackend(abc.ABC):
     def preview(self) -> bytes:
         """A small JPEG for framing.  Never used for measurement."""
 
+    def config_choices(self, name: str) -> list[str]:
+        """
+        The values this body will accept for a setting, in its own words.
+
+        Needed because a computed exposure has to be snapped to a shutter
+        speed the camera actually offers, and that list differs by model.
+        Returning [] means "unknown", never "none available" -- a caller
+        that cannot tell those apart will silently pick a wrong value.
+        """
+        return []
+
     # -- introspection -----------------------------------------------------
 
     def status(self) -> CameraStatus:
