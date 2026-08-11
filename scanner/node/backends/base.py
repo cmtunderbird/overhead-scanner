@@ -34,13 +34,31 @@ class CameraDisconnected(CameraError):
     """
 
 
+class ConfigUnsupported(CameraError):
+    """
+    The body does not expose this setting at all.
+
+    Distinct from "the body rejected the value", and the distinction
+    matters: an absent key is a permanent property of the hardware to be
+    reported once, while a rejected value is usually a fixable mistake
+    (wrong mode dial, out-of-range choice).  Collapsing the two is how a
+    node ends up claiming a setting it never applied.
+
+    Measured on ILCE-6000: `capturetarget` is absent from the config tree
+    entirely -- it is not merely defaulted.  See
+    `first-light-measurements.md`.
+    """
+
+
 @dataclass
 class CameraSettings:
     iso: int = 200
     shutter: str = "1/125"
     aperture: str = "8.0"
-    #: Where the camera writes: "card" or "internal".  Set it explicitly;
-    #: the default varies by body and silently changes all your timing.
+    #: *Requested* write destination: "card" or "internal".  This is a
+    #: request, not a guarantee -- older bodies do not expose the setting
+    #: at all and always stream to the host.  Read
+    #: `CameraStatus.effective_capture_target` for what actually happens.
     capture_target: str = "card"
     image_format: str = "RAW"
 
@@ -74,6 +92,14 @@ class CameraStatus:
     last_error: str = ""
     busy: bool = False
     tile_index: int = 0
+    #: What the body actually does with a frame: "card", "internal", or
+    #: "" when not yet probed.  On a body with no `capturetarget` key this
+    #: reads "internal" no matter what was requested.
+    effective_capture_target: str = ""
+    #: Setting names this body does not expose.  Never silently empty by
+    #: accident -- a backend that cannot probe leaves it empty and says so
+    #: via `last_error`.
+    unsupported_settings: list[str] = field(default_factory=list)
 
 
 class CameraBackend(abc.ABC):
@@ -87,6 +113,8 @@ class CameraBackend(abc.ABC):
         self.settings = CameraSettings()
         self.frames_captured = 0
         self.last_error = ""
+        self.effective_capture_target = ""
+        self.unsupported_settings: list[str] = []
         self._lock = threading.Lock()
 
     # -- lifecycle ---------------------------------------------------------
@@ -155,6 +183,8 @@ class CameraBackend(abc.ABC):
             last_error=self.last_error,
             busy=self._lock.locked(),
             tile_index=self.tile_index,
+            effective_capture_target=self.effective_capture_target,
+            unsupported_settings=list(self.unsupported_settings),
         )
 
     def capture_with_retry(
