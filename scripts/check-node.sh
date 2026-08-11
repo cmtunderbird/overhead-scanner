@@ -96,10 +96,21 @@ else
     warn "unrecognised OS codename '$OS_CODENAME'"
 fi
 
+GVFS_PRESENT=0
 if have gvfsd || dpkg-query -W -f='${db:Status-Status}' gvfs 2>/dev/null | grep -q installed; then
-    fail "gvfs present -- gvfs-gphoto2-volume-monitor will claim the camera. Use Pi OS Lite."
+    GVFS_PRESENT=1
+    warn "gvfs present -- this is a Desktop image, not Lite. Workable, but only with
+        the mitigations checked below; Lite is the supported base."
 else
     pass "no gvfs (Lite image)"
+fi
+
+DEFTGT="$(systemctl get-default 2>/dev/null)"
+if [[ "$DEFTGT" == "graphical.target" ]]; then
+    warn "default target is graphical.target -- a desktop session starts at every boot,
+        and with it gvfs. 'raspi-config nonint do_boot_behaviour B2' boots to console."
+elif [[ -n "$DEFTGT" ]]; then
+    pass "default target is $DEFTGT (no graphical session)"
 fi
 
 PY3="$(python3 -V 2>&1 || echo unknown)"
@@ -215,6 +226,33 @@ if ls /usr/lib/udev/rules.d/*libgphoto2* /lib/udev/rules.d/*libgphoto2* >/dev/nu
     pass "libgphoto2 vendor udev rules present"
 else
     warn "no libgphoto2 udev rules -- apt install libgphoto2-6t64"
+fi
+
+# The mask must be at --global (i.e. /etc/systemd/user) scope. A system-scope
+# mask of these units is a silent no-op: they are systemd *user* units, D-Bus
+# activated, and the user manager never reads /etc/systemd/system.
+for gunit in gvfs-gphoto2-volume-monitor.service gvfs-mtp-volume-monitor.service; do
+    if [[ "$(readlink -f "/etc/systemd/user/$gunit" 2>/dev/null)" == "/dev/null" ]]; then
+        pass "$gunit masked for all users"
+    elif [[ $GVFS_PRESENT -eq 1 ]]; then
+        fail "$gunit is NOT masked at --global scope, and gvfs is installed. A
+        system-scope mask does not count -- these are user units. Run:
+        sudo systemctl --global mask $gunit"
+    else
+        warn "$gunit not masked (harmless while gvfs is absent)"
+    fi
+    if [[ -L "/etc/systemd/system/$gunit" ]]; then
+        warn "a system-scope mask exists for $gunit. It does nothing -- the unit is a
+        user unit. Remove it so it stops giving false confidence."
+    fi
+done
+
+# The definitive test: is anything holding the camera right now?
+if pgrep -a gvfsd-gphoto2 >/dev/null 2>&1; then
+    fail "gvfsd-gphoto2 is RUNNING -- it has the USB interface and every capture will
+        fail with 'Could not claim the USB device'. This is what the masks prevent."
+elif [[ $GVFS_PRESENT -eq 1 ]]; then
+    pass "gvfsd-gphoto2 not running"
 fi
 
 if have gphoto2; then
