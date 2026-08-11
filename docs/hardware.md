@@ -12,6 +12,9 @@ Bill of materials, camera settings, and the physical build.
 | 2 × E-mount kit lens | 18–55 OSS or 16–50 PZ, **locked at 30 mm, f/8** | Imaging | with bodies |
 | 2 × Raspberry Pi 5 | 8 GB, **Pi OS Lite 64-bit** | Camera servers | ~€180 |
 | 2 × AI HAT+ | Hailo-8, 26 TOPS | Live QA per node | ~€220 |
+| 2 × PSU | **Official 27 W USB-C**, not a generic charger | Node power | ~€30 |
+| 2 × Active Cooler | Pi 5 | The AI HAT+ ships no NPU heatsink | ~€15 |
+| 2 × A2 microSD, 32 GB+ | — | Node boot media | ~€20 |
 | Gigabit switch + wired LAN | — | Transport | ~€30 |
 | Acer Nitro V15 | RTX 5060, 8 GB VRAM | Orchestration + batch processing | in hand |
 | Rigid frame + cross rail | Adjustable baseline and toe-in | Geometry | ~€150 |
@@ -26,6 +29,12 @@ cannot run your pipeline.
 **Pi OS Lite is not a preference.** `gvfs-gphoto2-volume-monitor` claims the
 camera the instant it enumerates and every command then fails; Lite has no
 desktop and therefore no gvfs. See [`decisions.md` D13](decisions.md#d13-pi-os-lite-specifically).
+
+**The PSU is not a detail either.** A Pi 5 on anything other than a 5 A / 25 W
+supply restricts *all* downstream USB peripherals to 600 mA combined — with a
+tethered body and a PCIe NPU on the same board, that is the difference between a
+node that works and one that browns out mid-book. The AI HAT+ occupies the single
+PCIe lane, so an NVMe HAT cannot share it; boot from the SD card.
 
 Note that first light needs none of the Pi hardware — the node runs fine on the
 laptop with the camera plugged straight in.
@@ -153,41 +162,50 @@ the free overlap stereo band (27 µm) and a €30 DOE line-laser pair (~10 µm).
 
 ## Node setup (Raspberry Pi)
 
+Scripted. Full procedure and reasoning in [`node-setup.md`](node-setup.md).
+
 ```bash
-# Pi OS Lite 64-bit, then:
-sudo apt update && sudo apt install -y libgphoto2-dev python3-pip git
+# Raspberry Pi OS Lite 64-bit (Trixie), then on each Pi:
 git clone https://github.com/cmtunderbird/overhead-scanner
 cd overhead-scanner
-pip install -r requirements.txt gphoto2
-
-# role comes from the hostname, so both Pis run the identical image
-sudo hostnamectl set-hostname scanner-node-0     # and -1 on the other
-
-python -m scanner node --backend gphoto2 --port 8000
+chmod +x scripts/*.sh
+sudo ./scripts/provision-node.sh --role 0 --ip 10.10.0.10/24 --ntp 10.10.0.1
+sudo reboot
+sudo ./scripts/check-node.sh          # exits non-zero if anything is not ready
 ```
 
-As a service:
+`--role` sets the hostname, and the node server derives its camera id from that,
+so both Pis run an identical card.
 
-```ini
-# /etc/systemd/system/scanner-node.service
-[Unit]
-Description=Overhead scanner camera node
-After=network-online.target
+**The hand-typed recipe that used to be here no longer works.** Pi OS is now
+Debian 13 Trixie, and it broke in three places: `pip install` into the system
+Python is refused by PEP 668 (and `python3-pip` is not even present on Lite, so
+`--break-system-packages` is unreachable); the Hailo driver package was renamed
+from `hailo-dkms` to `hailort-pcie-driver`; and a unit whose `ExecStart` is
+`/usr/bin/python3` cannot see the venv the code now has to live in. Each failure
+looks like something else, which is why this is a script with a checker rather
+than a code block. Details in [`node-setup.md`](node-setup.md).
 
-[Service]
-User=pi
-WorkingDirectory=/home/pi/overhead-scanner
-Environment=SCANNER_BACKEND=gphoto2
-ExecStart=/usr/bin/python3 -m uvicorn scanner.node.server:app --host 0.0.0.0 --port 8000
-Restart=always
-RestartSec=5
+Three things the script sets up that are easy to miss by hand:
 
-[Install]
-WantedBy=multi-user.target
-```
+- **A venv built with `--system-site-packages`.** `python3-hailort` installs
+  `hailo_platform` into the system `dist-packages` and publishes no wheel, so an
+  isolated venv cannot see the NPU at all.
+- **The service user in `plugdev`.** systemd's `uaccess` tag grants a device ACL
+  only to a user with an active local seat; over SSH there is none. This — not
+  only gvfs — is what produces *Could not claim the USB device* on a headless Pi.
+- **`opencv-contrib-python-headless`**, via
+  [`requirements-node.txt`](../requirements-node.txt). The desktop build links
+  `libGL.so.1`, which a Lite image does not have.
+
+No `config.txt` edits are needed for the AI HAT+: it is a true HAT+, so the PCIe
+connector enables itself and Gen 3 is applied automatically. `dtparam=pciex1_gen=3`
+is for the M.2 AI Kit.
 
 **Wired LAN, not Wi-Fi.** You are moving 24 MB per frame and the throughput
-inequality is tight enough without contention.
+inequality is tight enough without contention. Static addresses with no gateway
+and no DNS on the camera segment: a gateway that never answers ARP is the usual
+cause of "it worked, then it stopped".
 
 ---
 
