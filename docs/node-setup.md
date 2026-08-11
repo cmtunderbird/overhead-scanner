@@ -41,10 +41,54 @@ Raspberry Pi do not support an in-place Bookworm → Trixie upgrade. Reflash.
 
 ## 1. Flash the card
 
-**Raspberry Pi OS Lite, 64-bit.** Lite is not a preference. `gvfs-gphoto2-volume-monitor`
-claims the camera the instant it enumerates and every command then fails with
-*Could not claim the USB device*; Lite has no desktop and therefore no gvfs.
-See [`decisions.md` D13](decisions.md#d13-pi-os-lite-specifically).
+**Raspberry Pi OS Lite, 64-bit.** Lite is not a preference. On a Desktop image
+the file manager auto-mounts the camera and `gvfsd-gphoto2` then holds the USB
+interface, so every command fails with *Could not claim the USB device*; Lite has
+no desktop and therefore no gvfs. See
+[`decisions.md` D13](decisions.md#d13-pi-os-lite-specifically).
+
+### Can the Desktop image be used instead?
+
+Yes, but you have to disarm three things, and the reason it fails is not quite
+the one usually given.
+
+**It is not "gvfs grabs the camera on enumerate".** The gvfs camera *monitor*
+never opens the device — it only decides the body is a camera, by a single test:
+does the udev device carry the property `ID_GPHOTO2`. What actually claims the
+interface is `gvfsd-gphoto2`, and it runs because **pcmanfm auto-mounts the
+volume**: Pi OS ships `/etc/xdg/pcmanfm/default/pcmanfm.conf` with
+`mount_on_startup=1`, `mount_removable=1`, `autorun=1`. So the trigger is the
+desktop session existing at all, not the camera appearing.
+
+`provision-node.sh` applies three independent mitigations. Any one of them is
+sufficient; all three are cheap, and a node is not a place to rely on one.
+
+| Mitigation | What it does |
+|---|---|
+| `systemctl --global mask gvfs-gphoto2-volume-monitor.service` (and `-mtp-`) | The camera never becomes a volume, so nothing can mount it. |
+| udev `ENV{ID_GPHOTO2}=""` for Sony (054c) | gvfs stops recognising the body as a camera at all. libgphoto2 is unaffected — it enumerates through libusb and never reads udev. |
+| Boot to console: `sudo raspi-config nonint do_boot_behaviour B2` | No graphical session, so no gvfs at all. This is the clean one; it turns a Desktop install into a Lite-equivalent *runtime* while keeping the tools on disk. |
+
+⚠️ **The scope of that mask is the whole trick, and it is easy to get wrong.**
+`sudo systemctl mask gvfs-gphoto2-volume-monitor` — system scope, the incantation
+in most forum answers — **does nothing at all.** The unit ships only as
+`/usr/lib/systemd/user/...`, has no `[Install]` section, and is started by D-Bus
+activation delegated to `systemd --user`. A system-scope mask writes a dangling
+symlink into `/etc/systemd/system` that the user manager never reads: the command
+succeeds, prints nothing, and the camera still gets claimed. It has to be
+`--global`, which writes to `/etc/systemd/user`. `check-node.sh` verifies the
+symlink is actually there, and separately checks that `gvfsd-gphoto2` is not
+running — because the only claim worth trusting is the one you can observe.
+
+**Should you?** Probably not. The node has no user-facing interface — the
+operator GUI is a browser page served from the laptop — so a desktop on the Pi
+buys nothing and costs a permanently-running compositor, panel plugins,
+PackageKit, CUPS, and roughly a thousand extra packages (632 on Lite against 1640
+on Desktop and 1867 on Full). For a measurement instrument, "both nodes run an
+identical minimal image" is worth more than any of that. The case for Desktop is
+if you want a monitor on the node for on-device debugging; if so, take the
+Desktop image *and* set it to boot to console, which gives you the tools without
+the session.
 
 **Use Raspberry Pi Imager 2.x.** Current Trixie images are customised through
 **cloud-init**, and Imager 1.x does not know that format — it assumes the older
@@ -266,7 +310,8 @@ a boot stall on an isolated segment.
 
 | Symptom | Cause |
 |---|---|
-| `Could not claim the USB device` | Service user not in `plugdev` — `uaccess` does nothing over SSH. Or gvfs, if this is not a Lite image. |
+| `Could not claim the USB device` | Service user not in `plugdev` — `uaccess` does nothing over SSH. Or, on a Desktop image, `gvfsd-gphoto2` holding the interface after pcmanfm auto-mounted the body. `pgrep -a gvfsd-gphoto2` tells you which. |
+| Masked gvfs, still claimed | The mask was at system scope, which is a no-op for a user unit. It must be `systemctl --global mask`. |
 | `/status` shows `backend: mock` | `import gphoto2` is failing in the venv. **The node is serving synthetic pages.** |
 | `ImportError: libGL.so.1` | Desktop OpenCV on a Lite image. Install `opencv-contrib-python-headless`. |
 | `error: externally-managed-environment` | PEP 668. Use the venv; do not reach for `--break-system-packages`. |
