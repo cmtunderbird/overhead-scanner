@@ -240,6 +240,28 @@ def create_gui(state: GuiState) -> FastAPI:
 
     # --------------------------------------------------------------- focus
 
+    @app.get("/api/meter/{cam}")
+    def meter(cam: str, iso: float | None = None, aperture: float | None = None):
+        """
+        Guided exposure: meter in A, shoot in M.
+
+        The node does the arithmetic; this only carries it, so the operator
+        never transcribes a number off the camera's screen and never has to
+        remember that a meter renders white paper grey.
+        """
+        n = _node(cam)
+        params = {}
+        if iso is not None:
+            params["iso"] = iso
+        if aperture is not None:
+            params["aperture"] = aperture
+        try:
+            r = requests.get(f"{n.base}/meter", params=params, timeout=90.0)
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:  # noqa: BLE001
+            raise HTTPException(status_code=503, detail=str(e)) from e
+
     @app.get("/api/focus/{cam}")
     def focus(cam: str):
         """
