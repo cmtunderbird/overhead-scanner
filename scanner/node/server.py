@@ -37,6 +37,13 @@ def _default_camera_id() -> str:
     return "cam0"
 
 
+
+def _parse_shutter_safe(value) -> float:
+    """Shutter string to seconds, without importing the calibration module
+    at call sites that may not need it."""
+    from ..calib.exposure import parse_shutter
+    return parse_shutter(value)
+
 def build_camera() -> CameraBackend:
     camera_id = os.environ.get("SCANNER_CAMERA_ID") or _default_camera_id()
     tile = int(os.environ.get("SCANNER_TILE", "1" if camera_id.endswith("1") else "0"))
@@ -165,6 +172,85 @@ def create_app(camera: CameraBackend | None = None) -> FastAPI:
 
         return StreamingResponse(
             frames(), media_type="multipart/x-mixed-replace; boundary=frame")
+
+    @api.get("/meter")
+    def meter(request: Request,
+              iso: float | None = None,
+              aperture: float | None = None):
+        """
+        One metering frame -> the settings to dial in M.
+
+        `expprogram` is read-only over PTP, so the operator puts the body in
+        A, and the camera solves for shutter. We read back what it chose,
+        measure where the paper actually landed, and correct.
+
+        The correction matters: a meter renders what it sees as middle grey,
+        so aimed at white paper it underexposes by about two stops. Copying
+        the metered value straight into M gives dark scans.
+        """
+        from ..calib.exposure import (
+            ExposureReading, histogram_stats, read_frame, recommend,
+        )
+
+        cam = cam_of(request)
+        try:
+            files = cam.capture_with_retry(0, 1)
+            data = cam.read_file(files[0].file_id)
+        except CameraError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+
+        reading = read_frame(data)
+        source = "exif"
+        if reading is None:
+            # No EXIF (mock backend, or a body that writes JPEG-only).
+            # Fall back to what the camera says it is set to, and measure
+            # the frame we just took. Say which, so nobody mistakes a
+            # fallback for a reading off the file.
+            source = "settings"
+            try:
+                stats = histogram_stats(data)
+            except Exception:  # noqa: BLE001
+                stats = None
+            try:
+                shutter_s = _parse_shutter_safe(cam.settings.shutter)
+                reading = ExposureReading(
+                    iso=float(cam.settings.iso),
+                    aperture=float(str(cam.settings.aperture).lstrip("f/")),
+                    shutter_s=shutter_s,
+                    stats=stats,
+                )
+            except (ValueError, TypeError) as e:
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"no EXIF in the frame and the camera's own settings "
+                           f"could not be parsed either: {e}") from e
+
+        choices = cam.config_choices("shutterspeed")
+        rec = recommend(reading, choices, iso=iso, aperture=aperture)
+
+        return {
+            "source": source,
+            "metered": {
+                "iso": reading.iso,
+                "aperture": reading.aperture,
+                "shutter_s": reading.shutter_s,
+                "ev100": round(reading.ev, 2),
+                "paper_level": round(reading.stats.paper_level, 1) if reading.stats else None,
+                "mean_level": round(reading.stats.mean_level, 1) if reading.stats else None,
+                "clipped_high_pct": round(reading.stats.clipped_high_pct, 2) if reading.stats else None,
+            },
+            "recommend": {
+                "iso": rec.iso,
+                "aperture": rec.aperture,
+                "shutter": rec.shutter_label,
+                "shutter_s": rec.shutter_s,
+                "stops_applied": round(rec.stops_applied, 2),
+                "basis": rec.basis,
+                "snap_error_stops": round(rec.snap_error_stops, 2),
+            },
+            "choices_known": bool(choices),
+            "warnings": rec.warnings,
+        }
 
     @api.get("/focus")
     def focus(request: Request):
