@@ -1,0 +1,42 @@
+# Node requirements -- what a Raspberry Pi 5 camera node actually needs.
+#
+# Deliberately not requirements.txt.  Two differences, both of which will bite
+# you on Pi OS Lite if you use the full file instead:
+#
+#   1. opencv-contrib-python links libGL.so.1, which is not on a Lite image
+#      (no desktop, no Mesa).  `import cv2` then dies with
+#      "ImportError: libGL.so.1: cannot open shared object file".  The
+#      -headless build is byte-identical for our purposes -- the node only
+#      encodes JPEGs, resizes previews and runs a Laplacian for focus scoring.
+#      It also drops ~100 MB.  Nothing on the node touches cv2.aruco or a GUI
+#      window; calibration runs on the laptop.
+#
+#   2. uvicorn without [standard].  The extras pull uvloop, httptools and
+#      watchfiles -- three compiled wheels to source for aarch64 in exchange
+#      for a reload watcher an appliance must never use.  Plain uvicorn falls
+#      back to asyncio and h11 and serves 24 MB frames perfectly well; the
+#      bottleneck is USB 2.0 PTP at 10-15 MB/s, not the event loop.
+#
+# scipy is absent for the same reason: the node captures and previews, it does
+# not process.  Install with:
+#
+#     pip install --only-binary :all: -r requirements-node.txt
+#
+# --only-binary :all: on purpose -- it turns a missing aarch64 wheel into an
+# immediate error rather than a source build that fails 20 minutes later for
+# want of python3-dev.
+
+numpy>=1.24
+Pillow>=10.0
+opencv-contrib-python-headless>=4.8
+
+fastapi>=0.110
+uvicorn>=0.27
+pydantic>=2.5
+requests>=2.31
+
+# Installed separately by provision-node.sh, and listed here for the record.
+# The manylinux_2_28_aarch64 wheel bundles libgphoto2, libusb and the ptp2
+# camlib, so no apt build dependency is required -- but it ships no udev
+# rules, which is why the provisioning script installs libgphoto2-6t64 too.
+# gphoto2>=2.5
