@@ -27,7 +27,7 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from .backends.base import CameraBackend, CameraError, CameraSettings
+from .backends.base import CameraBackend, CameraError, CameraSettings, StagingFull
 
 def _default_camera_id() -> str:
     """Role from hostname, so both Pis can run the identical SD image."""
@@ -303,6 +303,12 @@ def create_app(camera: CameraBackend | None = None) -> FastAPI:
             )
         try:
             files = cam.capture_with_retry(req.seq, frames)
+        except StagingFull as e:
+            # 507, not 503: the camera is fine and retrying will not help.
+            # A node that answers "service unavailable" to a full disk sends
+            # the operator back to the camera, which is the wrong place.
+            # Must precede the CameraError arm -- StagingFull is a subclass.
+            raise HTTPException(status_code=507, detail=str(e)) from e
         except CameraError as e:
             raise HTTPException(status_code=503, detail=str(e)) from e
         return {
