@@ -65,6 +65,16 @@ pip install gphoto2
 | Pre-AF | **Off** | Hunts between frames and moves your focus |
 | Focus | **MF** | Manual. **Not DMF** — see below |
 
+> **The node now sets focus and drive mode itself at connect**, because leaving
+> them inherited cost an entire evening on 2026-08-12: the body was found in
+> **DMF**, refused the shutter, and every capture returned `[-1] Unspecified
+> error` while the PTP session died behind it — a failure that reads exactly
+> like a broken cable. One PTP write of `focusmode=Manual` fixed it and the next
+> capture produced a 24,513,792-byte ARW. `expprogram` stays yours: it is
+> read-only over PTP, so the mode dial is genuinely the one thing you must set
+> by hand.
+
+
 > **Focus must be MF, not DMF.** libgphoto2's `camera_sony_capture()` skips its
 > entire focus-wait loop only when `FocusMode == 1`, which is Manual. DMF is not
 > 1, so it re-enters the wait and costs up to a second a frame — and DMF holds an

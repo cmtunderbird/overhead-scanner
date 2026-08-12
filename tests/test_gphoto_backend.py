@@ -83,6 +83,13 @@ def _tree(*, capturetarget: bool):
         Widget("shutterspeed", "1/250"),
         Widget("f-number", "f/5.6"),
         Widget("expprogram", "M", readonly=True),
+        # Both default to what the real body was found in on 2026-08-12.
+        # DMF is not a neutral starting point -- it is the state that made
+        # the ILCE-6000 refuse the shutter for an entire evening -- so the
+        # fake starts there deliberately, and a connect that does not
+        # correct it fails the tests.
+        Widget("focusmode", "DMF"),
+        Widget("capturemode", "Continuous Low Speed"),
     ])
     status = Widget("status", children=[Widget("cameramodel", "ILCE-6000")])
     kids = [imgsettings, capturesettings, status]

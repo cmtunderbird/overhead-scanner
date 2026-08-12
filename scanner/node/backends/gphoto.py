@@ -361,6 +361,7 @@ class GPhotoCamera(CameraBackend):
         self.last_error = ""
         self._config_paths = self._probe_config()
         self._resolve_capture_target()
+        self._enforce_capture_prerequisites()
         self._adopt_body_settings()
         if self._cache_dir is None:
             root, volatile = _resolve_staging_root()
@@ -391,6 +392,88 @@ class GPhotoCamera(CameraBackend):
             except (ValueError, TypeError):
                 continue                      # unparseable: better silent than wrong
         return read
+
+    #: Settings the body must be in for the shutter to work at all, and
+    #: which are NOT exposure -- so they are enforced rather than adopted.
+    REQUIRED_MODES = (
+        ("focusmode", "Manual"),
+        ("capturemode", "Single Shot"),
+    )
+
+    def _enforce_capture_prerequisites(self) -> None:
+        """
+        Put the body into the two modes a copy stand requires, at connect.
+
+        These were inherited, not set -- "two settings nobody chose,
+        surviving from however the body was last left" -- and the backlog
+        called that cosmetic.  It is not.  Measured on scanner-node-0,
+        2026-08-12:
+
+            focusmode      Current: DMF
+            expprogram     Current: M
+            capturemode    Current: Single Shot
+
+        With DMF the body refused the shutter.  Every capture returned
+        `[-1] Unspecified error`, the PTP session died behind it, and the
+        `gphoto2` CLI failed identically -- so the node was exonerated and
+        the evening was spent on a link fault that was really an AF
+        interlock.  One PTP write of `focusmode=Manual` fixed it, and the
+        very next capture produced a 24,513,792-byte ARW.
+
+        Why DMF blocks: `camera_sony_capture()` skips its focus-wait loop
+        only when `FocusMode == 1` (Manual).  DMF is not 1, so it waits
+        for a focus lock that a manual-focus copy stand will never report.
+
+        Why enforce rather than warn: the setting is reachable from the
+        camera's own Fn menu, so anyone who touches the body can undo it
+        without knowing they have, and the failure that follows looks like
+        a broken cable rather than a wrong mode.  `expprogram` stays the
+        operator's job -- it is read-only over PTP and genuinely cannot be
+        set from here.
+
+        Drive mode is enforced for a second, independently-paid reason:
+        `first-node-build.md` records a drive mode left in *Continuous Low
+        Speed* overnight producing an hour of confusing double-exposures.
+        """
+        if not self._probe_ok:
+            return
+        problems: list[str] = []
+        for name, wanted in self.REQUIRED_MODES:
+            if not self.has_config(name):
+                if name not in self.unsupported_settings:
+                    self.unsupported_settings.append(name)
+                continue
+            try:
+                current = str(self._get_config(name)).strip()
+            except CameraError:
+                current = ""
+            if current == wanted:
+                continue
+            try:
+                self._set_config(name, wanted)
+            except CameraError as e:
+                problems.append(f"{name}: wanted {wanted!r}, {e}")
+                continue
+            # Read back.  A body that accepts a write and quietly ignores
+            # it is the failure this whole file keeps guarding against.
+            try:
+                got = str(self._get_config(name)).strip()
+            except CameraError:
+                got = ""
+            if got and got != wanted:
+                problems.append(
+                    f"{name}: asked {wanted!r}, body reports {got!r}"
+                )
+
+        if problems:
+            note = (
+                f"{self.camera_id}: could not set the modes capture depends on: "
+                + "; ".join(problems)
+                + ".  With focusmode anything but Manual the body waits for a "
+                "focus lock a copy stand will never give it, and every capture "
+                "fails with an error that looks like a link fault."
+            )
+            self.last_error = f"{self.last_error}; {note}" if self.last_error else note
 
     def _adopt_body_settings(self) -> None:
         """

@@ -224,3 +224,85 @@ def test_the_base_recover_is_just_a_reconnect(monkeypatch):
     monkeypatch.setattr(cam, "reconnect", lambda *a, **k: called.append(1))
     cam.recover()
     assert called == [1]
+
+
+# ------------------------------------------------- prerequisites at connect --
+#
+# Measured on scanner-node-0, 2026-08-12:
+#
+#     focusmode      Current: DMF
+#     expprogram     Current: M
+#     capturemode    Current: Single Shot
+#
+# DMF made the body refuse the shutter.  Every capture returned
+# `[-1] Unspecified error`, the session died behind it, and the gphoto2 CLI
+# failed identically -- so the node was exonerated and the evening went on a
+# link fault that was really an AF interlock.  One PTP write of
+# focusmode=Manual fixed it and the next capture produced a 24,513,792-byte
+# ARW.  The backlog had this filed as cosmetic.
+
+def test_focus_mode_is_set_not_inherited(dev):
+    cam, fake = dev
+    assert str(fake.cfg.get_child_by_name("focusmode").get_value()) == "Manual"
+
+
+def test_drive_mode_is_set_not_inherited(dev):
+    """
+    Independently paid for: a drive mode left in Continuous Low Speed
+    overnight produced an hour of confusing double-exposures.
+    """
+    cam, fake = dev
+    assert str(fake.cfg.get_child_by_name("capturemode").get_value()) == "Single Shot"
+
+
+def test_a_body_left_in_dmf_is_corrected_at_connect(monkeypatch, tmp_path):
+    from scanner.node.backends.gphoto import GPhotoCamera
+
+    monkeypatch.setenv("SCANNER_STAGING_DIR", str(tmp_path / "staging"))
+    fake = install_fake(monkeypatch, capturetarget=False)
+    fake.cfg.get_child_by_name("focusmode").set_value("DMF")
+    assert str(fake.cfg.get_child_by_name("focusmode").get_value()) == "DMF"
+
+    cam = GPhotoCamera("cam0", 0)
+    cam.connect()
+    assert str(fake.cfg.get_child_by_name("focusmode").get_value()) == "Manual"
+    assert "focusmode" not in cam.last_error
+
+
+def test_a_body_that_ignores_the_write_is_reported(monkeypatch, tmp_path):
+    """
+    Accepting a write and quietly ignoring it is the failure this whole
+    file exists to catch.  Say so rather than assuming it took.
+    """
+    from scanner.node.backends.gphoto import GPhotoCamera
+
+    monkeypatch.setenv("SCANNER_STAGING_DIR", str(tmp_path / "staging"))
+    fake = install_fake(monkeypatch, capturetarget=False)
+    node = fake.cfg.get_child_by_name("focusmode")
+    node.set_value("DMF")
+    node.sticky = "DMF"          # writes land, value never changes
+
+    cam = GPhotoCamera("cam0", 0)
+    cam.connect()
+    assert "focusmode" in cam.last_error
+    assert "focus lock" in cam.last_error
+
+
+def test_expprogram_is_left_alone(dev):
+    """
+    Read-only over PTP.  The mode dial is genuinely the operator's job and
+    pretending otherwise would put a lie in last_error.
+    """
+    cam, _ = dev
+    assert all(name != "expprogram" for name, _ in cam.REQUIRED_MODES)
+
+
+def test_an_absent_mode_is_recorded_not_fatal(monkeypatch, tmp_path):
+    from scanner.node.backends.gphoto import GPhotoCamera
+
+    monkeypatch.setenv("SCANNER_STAGING_DIR", str(tmp_path / "staging"))
+    install_fake(monkeypatch, capturetarget=False)
+    cam = GPhotoCamera("cam0", 0)
+    monkeypatch.setattr(cam, "has_config", lambda n: n not in ("focusmode",))
+    cam.connect()
+    assert "focusmode" in cam.unsupported_settings
