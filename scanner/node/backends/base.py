@@ -239,6 +239,16 @@ class CameraBackend(abc.ABC):
     #: at the exact moment the filesystem stops accepting anything.
     STAGING_MARGIN_BYTES = 64 * 1024 * 1024
 
+    def read_settings(self) -> dict[str, str]:
+        """
+        Values read back from the hardware right now, or {} if unavailable.
+
+        Keyed by the body's own config names.  Backends that cannot ask the
+        hardware return {} and callers must treat that as "unknown", never
+        as "matches".
+        """
+        return {}
+
     def staging_free_bytes(self) -> int:
         """
         Free space where captured frames are staged, or -1 if not applicable.

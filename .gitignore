@@ -10,6 +10,10 @@ venv/
 # outputs
 selftest_out/
 captures/
+
+# hailortcli writes its log into the current directory, so it appears in
+# the repo root whenever the Hailo tools are run from a checkout.
+hailort.log
 masters/
 calibration/
 *.tif

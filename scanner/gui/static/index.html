@@ -165,8 +165,13 @@ footer{border-top:1px solid var(--line);background:var(--panel);padding:8px 12px
         <h3>Throughput</h3>
         <table id="thru"><tr><td colspan="2" style="color:var(--dim)">nothing captured yet</td></tr></table>
         <div class="note"><b>Sustainable burst</b> = transfer time ≤ page-turn time,
-          or the queue grows without bound. At ~15 MB/s and a 4 s page turn that is
-          two to three frames.</div>
+          or the queue grows without bound. <b>Measured on scanner-node-0
+          (ILCE-6000, 12 Aug 2026): 9.25 MB/s, ~2.65 s per frame</b>, and a
+          three-frame burst takes 7.96 s — it scales linearly, there is no burst
+          discount. Against a 4 s page turn that is <b>one frame</b>, with a
+          second only if the operator is slower than 5.3 s per page.<br>
+          There is no card buffer to hide behind: this body has no
+          <code>capturetarget</code>, so transfer is serial with capture.</div>
       </div>
 
       <div class="tab" data-t="focus">
