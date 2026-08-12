@@ -275,7 +275,12 @@ if [[ -e /dev/hailo0 ]]; then
     pass "/dev/hailo0 present ($(stat -c '%A %U:%G' /dev/hailo0 2>/dev/null))"
 
     if have hailortcli; then
-        HAILO_ID="$(timeout 20 hailortcli fw-control identify 2>&1 || true)"
+        # tr -d '\0': hailortcli emits NUL bytes in its identify output, and
+        # bash warns "ignored null byte in input" on every run.  Harmless in
+        # itself, but this script's whole value is that its output can be
+        # trusted at a glance -- a permanent warning trains the reader to
+        # skip warnings.
+        HAILO_ID="$(timeout 20 hailortcli fw-control identify 2>&1 | tr -d '\0' || true)"
         if grep -qi 'firmware version' <<<"$HAILO_ID"; then
             FW="$(grep -i 'Firmware Version' <<<"$HAILO_ID" | head -1 | sed 's/.*: *//')"
             ARCHV="$(grep -i 'Device Architecture' <<<"$HAILO_ID" | head -1 | sed 's/.*: *//')"

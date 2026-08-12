@@ -335,7 +335,12 @@ def test_verified_settings_are_recorded(a6000):
     dev, _ = a6000
     dev.apply_settings(CameraSettings(iso=100, shutter="1/125", aperture="f/8"))
     assert dev.settings.iso == 100
-    assert dev.settings.aperture == "f/8"
+    # Recorded in the node's own notation -- the bare number -- rather than
+    # in whichever spelling the caller happened to use.  Before 2026-08-12
+    # this stored the asked string verbatim, so the same aperture could be
+    # recorded as 'f/8', 'f8' or '8.0' depending on who set it, and a
+    # read-back comparison against the body's spelling could never succeed.
+    assert dev.settings.aperture == "8"
     assert dev.last_error == ""
 
 
@@ -469,3 +474,98 @@ def test_preflight_refuses_before_the_shutter(a6000, monkeypatch):
         dev.capture(seq=1)
     assert "No shutter actuation" in str(e.value)
     assert fired == [], "the shutter must not have been used"
+
+
+# --------------------------------------------------------------------------
+# notation is not disagreement
+#
+# Measured on scanner-node-0, 2026-08-12.  POST /config asked for f/5.6:
+#
+#   /status  "aperture":"8.0"                       <- stale, the old value
+#   last_error "f-number: asked '5.6', body reports 'f/5.6'"
+#   EXIF     F Number : 5.6                         <- it had worked
+#
+# The write succeeded, the read-back succeeded, and a string comparison
+# threw the result away.
+# --------------------------------------------------------------------------
+
+def test_f_prefix_is_not_a_rejection(a6000, monkeypatch):
+    from scanner.node.backends.gphoto import canonical_setting
+
+    dev, _ = a6000
+    real_get = dev._get_config
+
+    def sony_spelling(name):
+        if name == "f-number":
+            return "f/5.6"          # what the body actually says
+        return real_get(name)
+
+    monkeypatch.setattr(dev, "_get_config", sony_spelling)
+    dev.apply_settings(CameraSettings(iso=400, shutter="1/60", aperture="5.6"))
+
+    assert dev.last_error == "", "a correct write must not be reported as rejected"
+    assert dev.settings.aperture == canonical_setting("f-number", "5.6")
+    assert dev.settings.iso == 400
+
+
+def test_unreduced_shutter_fraction_is_not_a_rejection(a6000, monkeypatch):
+    """
+    Sony reports 1/2 s as the unreduced '5/10'.
+
+    Text-compared that is a mismatch; as an exposure it is identical. This
+    is the slow end of the range, which is exactly where a scanner in poor
+    light ends up.
+    """
+    dev, _ = a6000
+    real_get = dev._get_config
+
+    def sony_spelling(name):
+        return "5/10" if name == "shutterspeed" else real_get(name)
+
+    monkeypatch.setattr(dev, "_get_config", sony_spelling)
+    dev.apply_settings(CameraSettings(iso=100, shutter="1/2", aperture="8"))
+    assert dev.last_error == ""
+
+
+def test_a_genuinely_different_value_is_still_a_rejection(a6000, monkeypatch):
+    """
+    The comparison is loosened for notation, not for value.
+
+    The starting aperture is pinned first, because `connect()` now adopts
+    the body's own value -- without that, "unchanged" and "wrongly
+    accepted" look identical and the test proves nothing.
+    """
+    dev, _ = a6000
+    dev.settings = dev.settings.merged(aperture="8")
+    real_get = dev._get_config
+
+    def wrong(name):
+        return "f/11" if name == "f-number" else real_get(name)
+
+    monkeypatch.setattr(dev, "_get_config", wrong)
+    dev.apply_settings(CameraSettings(iso=100, shutter="1/125", aperture="5.6"))
+    assert "f-number" in dev.last_error
+    assert dev.settings.aperture == "8", "a rejected write must not be recorded"
+
+
+def test_connect_adopts_the_bodys_actual_exposure(monkeypatch):
+    """
+    /status must not describe a camera nobody has configured.
+
+    Observed: /status said ISO 200, 1/125, f/8.0 -- the constructor
+    defaults -- while the next frame's EXIF read ISO 100, 1/250.
+    """
+    from scanner.node.backends.gphoto import GPhotoCamera
+
+    cam = install_fake(monkeypatch, capturetarget=False)
+    caps = cam.cfg.get_child_by_name("capturesettings")
+    caps.get_child_by_name("f-number")._value = "f/4.0"
+    caps.get_child_by_name("shutterspeed")._value = "1/250"
+    cam.cfg.get_child_by_name("imgsettings").get_child_by_name("iso")._value = "800"
+
+    dev = GPhotoCamera("cam0", 0)
+    dev.connect()
+
+    assert dev.settings.iso == 800
+    assert dev.settings.shutter == "1/250"
+    assert dev.settings.aperture == "4"

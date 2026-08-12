@@ -127,6 +127,40 @@ def create_app(camera: CameraBackend | None = None) -> FastAPI:
             raise HTTPException(status_code=503, detail=str(e)) from e
         return asdict(cam.status())
 
+    @api.get("/config")
+    def read_config(request: Request):
+        """
+        What the body is set to, asked now — as against what we believe.
+
+        `/status` reports the node's own record. This asks the camera. The
+        two should agree, and on 2026-08-12 they did not: a read-back
+        comparison failed on notation (`'5.6'` vs the body's `'f/5.6'`), so
+        a correctly applied aperture was recorded as rejected and `/status`
+        kept the previous value. Without this route there was no way to see
+        that from outside the machine.
+        """
+        cam = cam_of(request)
+        try:
+            live = cam.read_settings()
+        except CameraError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        believed = {
+            "iso": str(cam.settings.iso),
+            "shutterspeed": cam.settings.shutter,
+            "f-number": cam.settings.aperture,
+        }
+        return {
+            "camera_id": cam.camera_id,
+            "read_from_body": live,
+            "node_believes": believed,
+            #: Empty is the healthy answer. Anything here means the node is
+            #: reporting an exposure the camera does not have.
+            "disagreements": sorted(
+                k for k, v in live.items()
+                if k in believed and str(believed[k]).strip() != v
+            ),
+        }
+
     @api.post("/config")
     def configure(request: Request, req: ConfigRequest):
         cam = cam_of(request)

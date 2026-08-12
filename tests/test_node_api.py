@@ -132,3 +132,76 @@ def test_successive_captures_differ(client):
     a = c.get(f"/files/{c.post('/capture', json={'seq': 0}).json()['files'][0]['file_id']}").content
     b = c.get(f"/files/{c.post('/capture', json={'seq': 1}).json()['files'][0]['file_id']}").content
     assert a != b
+
+
+# --------------------------------------------------------------------------
+# GET /config: what the body says, against what the node believes
+#
+# Added after 12 Aug 2026, when the two disagreed on real hardware and
+# nothing exposed it.  POST /config asked for f/5.6; the body applied it
+# (EXIF confirmed F Number 5.6); the node compared '5.6' with the body's
+# 'f/5.6' as strings, called it a rejection, and kept reporting f/8.0.
+# --------------------------------------------------------------------------
+
+class _ReadableMock(MockCamera):
+    """A mock that can be asked what it is really set to."""
+    live: dict[str, str] = {}
+
+    def read_settings(self):
+        return dict(self.live)
+
+
+def _readable_client(live):
+    cam = _ReadableMock("cam0", 0, GEOM, scale=0.06, page_px_per_mm=3.0,
+                        transfer_mb_s=1e6)
+    cam.live = live
+    cam.connect()
+    server.set_camera(cam)
+    return TestClient(server.app), cam
+
+
+def test_get_config_reports_agreement():
+    c, cam = _readable_client({})
+    try:
+        # Body echoes exactly what the node believes.
+        cam.live = {
+            "iso": str(cam.settings.iso),
+            "shutterspeed": cam.settings.shutter,
+            "f-number": cam.settings.aperture,
+        }
+        d = c.get("/config").json()
+        assert d["disagreements"] == []
+        assert d["read_from_body"]["iso"] == str(cam.settings.iso)
+    finally:
+        server.set_camera(None)
+
+
+def test_get_config_names_a_disagreement():
+    """
+    Silence here is the whole point: an empty list must mean agreement,
+    not "did not look".
+    """
+    c, cam = _readable_client({})
+    try:
+        cam.live = {
+            "iso": str(cam.settings.iso),
+            "shutterspeed": cam.settings.shutter,
+            "f-number": "5.6",           # node believes 8.0
+        }
+        d = c.get("/config").json()
+        assert d["disagreements"] == ["f-number"]
+        assert d["read_from_body"]["f-number"] == "5.6"
+        assert d["node_believes"]["f-number"] == cam.settings.aperture
+    finally:
+        server.set_camera(None)
+
+
+def test_get_config_on_a_backend_that_cannot_be_asked():
+    """Unknown must never be rendered as agreement."""
+    c, _ = _readable_client({})
+    try:
+        d = c.get("/config").json()
+        assert d["read_from_body"] == {}
+        assert d["disagreements"] == []      # nothing read, so nothing to compare
+    finally:
+        server.set_camera(None)

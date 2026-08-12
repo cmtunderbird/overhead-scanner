@@ -67,10 +67,14 @@ mode dial -> M, Pre-AF -> Off, Focus -> DMF.
 
 from __future__ import annotations
 
+import math
 import pathlib
+import re
 import shutil
 import tempfile
 import time
+
+from ...calib.exposure import parse_shutter
 
 from .base import (
     CameraBackend,
@@ -81,6 +85,59 @@ from .base import (
     ConfigUnsupported,
     StagingFull,
 )
+
+
+_F_PREFIX = re.compile(r"^\s*f\s*/?\s*", re.I)
+
+
+def _aperture_number(raw) -> float:
+    """5.6 from '5.6', 'f/5.6', 'F5.6' -- the body is not consistent."""
+    return float(_F_PREFIX.sub("", str(raw)).strip())
+
+
+def canonical_setting(name: str, raw) -> str:
+    """
+    One spelling per value, so a setting is not recorded twice two ways.
+
+    The node's own notation is the bare number: `400`, `1/60`, `5.6`.
+    """
+    if name == "iso":
+        return str(int(float(str(raw).strip())))
+    if name == "f-number":
+        return f"{_aperture_number(raw):g}"
+    return str(raw).strip()
+
+
+def same_setting(name: str, asked, got) -> bool:
+    """
+    Compare a requested value with the body's read-back **by value**.
+
+    Measured on ILCE-6000, 2026-08-12: asked `f-number` = `'5.6'`, body
+    reported `'f/5.6'`.  A string comparison calls that a rejection -- so a
+    setting the camera had applied perfectly was recorded as failed,
+    `/status` kept the previous aperture, and `last_error` raised an alarm
+    about a body that had done exactly as it was told.  Confirmed from the
+    captured frame's EXIF: `F Number: 5.6`.
+
+    Shutter needs the same treatment for a worse reason: Sony reports 1/2 s
+    as the unreduced `'5/10'`, so `'1/2' != '5/10'` as text while being the
+    same exposure.  `parse_shutter` already knows this.
+    """
+    try:
+        if name == "iso":
+            return int(float(str(asked))) == int(float(str(got)))
+        if name == "f-number":
+            return abs(_aperture_number(asked) - _aperture_number(got)) < 1e-3
+        if name == "shutterspeed":
+            a, b = parse_shutter(asked), parse_shutter(got)
+            if a <= 0 or b <= 0:
+                return a == b
+            # A hundredth of a stop: far tighter than any real difference
+            # between adjacent shutter choices, loose enough for rounding.
+            return abs(math.log2(a / b)) < 0.01
+    except (ValueError, TypeError, ZeroDivisionError):
+        pass
+    return str(asked).strip() == str(got).strip()
 
 
 def gphoto2_available() -> bool:
@@ -135,9 +192,57 @@ class GPhotoCamera(CameraBackend):
         self.last_error = ""
         self._config_paths = self._probe_config()
         self._resolve_capture_target()
+        self._adopt_body_settings()
         if self._cache_dir is None:
             self._cache_dir = pathlib.Path(
                 tempfile.mkdtemp(prefix=f"scanner-{self.camera_id}-"))
+
+    def read_settings(self) -> dict[str, str]:
+        """
+        What the body says it is set to, asked now, in the node's notation.
+
+        Distinct from `self.settings`, which is what the node believes.  The
+        two disagreeing is the interesting case, and until 2026-08-12 there
+        was no way to see it: `/config` was write-only and `/status` reported
+        belief.
+        """
+        read: dict[str, str] = {}
+        for name in self.SETTING_KEYS:
+            try:
+                raw = self._get_config(name)
+            except CameraError:
+                continue                      # absent or unreadable: leave it
+            if raw in (None, ""):
+                continue
+            try:
+                read[name] = canonical_setting(name, raw)
+            except (ValueError, TypeError):
+                continue                      # unparseable: better silent than wrong
+        return read
+
+    def _adopt_body_settings(self) -> None:
+        """
+        Take the body's actual exposure as the node's own, at connect.
+
+        Until this ran, `settings` held constructor defaults the camera had
+        never been told about, so `/status` described a fictional exposure
+        from the moment it connected -- and said nothing to suggest the
+        numbers were aspirations rather than readings.
+
+        Measured on scanner-node-0, 2026-08-12: `/status` reported
+        ISO 200, 1/125, f/8.0 while the very next frame's EXIF read
+        ISO 100, 1/250, f/8.0.  Two of the three were wrong, and an
+        operator dialling settings from `/status` would have been working
+        from fiction.
+        """
+        read = self.read_settings()
+        if not read:
+            return
+        self.settings = self.settings.merged(
+            iso=int(read["iso"]) if "iso" in read else None,
+            shutter=read.get("shutterspeed"),
+            aperture=read.get("f-number"),
+        )
 
     def _open_session(self) -> None:
         """
@@ -378,10 +483,14 @@ class GPhotoCamera(CameraBackend):
                 got = str(self._get_config(name))
             except CameraError:
                 got = ""
-            if got and got.strip() != value.strip():
+            if got and not same_setting(name, value, got):
                 rejected.append(f"{name}: asked {value!r}, body reports {got!r}")
             else:
-                applied[name] = value
+                # Record the body's own read-back where there is one, in the
+                # node's notation.  Recording the *asked* value would make
+                # /status agree with the request rather than with the camera,
+                # which is the whole failure this read-back exists to catch.
+                applied[name] = canonical_setting(name, got or value)
 
         for name in absent:
             if name not in self.unsupported_settings:
