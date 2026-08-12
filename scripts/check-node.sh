@@ -388,6 +388,23 @@ if systemctl list-unit-files scanner-node.service >/dev/null 2>&1 && \
     else
         fail "scanner-node.service is not running -- journalctl -u scanner-node -n 50"
     fi
+
+    # Assert the *effect*, not the spelling.  StartLimitIntervalSec belongs in
+    # [Unit]; in [Service] systemd calls it an unknown key, drops it, and
+    # applies the default limit -- while the unit file still reads as though
+    # the limiter were disabled.  Observed on scanner-node-0: `10s` with the
+    # directive in the wrong section, `0` with it in the right one.  Reading
+    # the unit cannot tell those apart; asking systemd can.
+    START_LIMIT="$(systemctl show -p StartLimitIntervalUSec --value scanner-node.service 2>/dev/null)"
+    if [[ "$START_LIMIT" == "0" ]]; then
+        pass "start rate limiter disabled (StartLimitIntervalUSec=0)"
+    else
+        fail "start rate limiter is ACTIVE (StartLimitIntervalUSec=${START_LIMIT:-?}).  The
+        A6000 drops its PTP session when idle; with Restart=always a burst of
+        reconnect failures will trip the limit and systemd will stop this node
+        permanently.  StartLimitIntervalSec=0 must be in [Unit], not [Service]
+        -- check 'journalctl -u scanner-node -b | grep \"Unknown key\"'."
+    fi
 else
     fail "scanner-node.service not installed -- run provision-node.sh"
 fi

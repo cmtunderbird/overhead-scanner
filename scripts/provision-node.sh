@@ -596,6 +596,19 @@ Documentation=https://github.com/cmtunderbird/overhead-scanner/blob/main/docs/no
 # does not need the address to be up first.
 After=network.target
 Wants=network.target
+# The start rate limiter lives in [Unit], not [Service].  systemd parses
+# StartLimitIntervalSec at unit level and silently ignores it anywhere else --
+# it logs "Unknown key 'StartLimitIntervalSec' in section [Service], ignoring"
+# once per load and carries on with the default limit.  It sat in [Service]
+# until 2026-08-11, so the protection described below did not exist on any node
+# provisioned before then, while the comment asserted that it did.
+#
+# Why disable it at all: the A6000 drops its PTP session when idle and the
+# backend reconnects.  With Restart=always, a run of reconnect failures would
+# otherwise trip the default limit (5 starts in 10 s) and systemd would stop
+# the node permanently -- turning a recoverable camera hiccup into a dead node
+# that needs a human.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -610,9 +623,6 @@ Environment=PYTHONUNBUFFERED=1
 ExecStart=${VENV_DIR}/bin/python -m uvicorn scanner.node.server:app --host 0.0.0.0 --port ${PORT}
 Restart=always
 RestartSec=5
-# The A6000 drops its PTP session when idle and the backend reconnects; do not
-# let a burst of restarts trip the default start limit.
-StartLimitIntervalSec=0
 
 NoNewPrivileges=yes
 ProtectSystem=full
