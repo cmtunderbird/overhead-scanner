@@ -333,6 +333,20 @@ It raises actionable errors for the two failure modes you will actually hit —
 gvfs holding the USB device, and no camera found — with the fix in the message.
 See [`troubleshooting.md`](troubleshooting.md).
 
+`no camera found` orders its causes by likelihood rather than by a fixed list,
+because `GP_ERROR_MODEL_NOT_FOUND` cannot tell them apart — the device is simply
+not enumerated. **If the body has answered earlier in the run, a flat battery is
+named first**: the A6000 leaves the bus without warning a tethered host, and a
+cable that has been carrying 24 MB frames is not a charge-only lead. If it has
+never answered, the cable is named first. Neither cause is ever dropped.
+
+The same distinction reaches the give-up message from `recover()`. When a Sony
+device is still on the bus the body is *wedged*, and the advice is to pull the
+cable and **not** power-cycle — a power cycle does not clear the body's buffer
+and it resets a taped zoom to 16 mm. When nothing is on the bus the body is
+*absent*, that advice would forbid the only action that helps, and the message
+says so instead.
+
 ---
 
 ## Orchestrator

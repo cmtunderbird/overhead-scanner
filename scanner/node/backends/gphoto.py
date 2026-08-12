@@ -348,6 +348,11 @@ class GPhotoCamera(CameraBackend):
         #: this, "probe failed" and "body supports nothing" are the same
         #: empty dict, and the more serious diagnosis loses.
         self._probe_ok = False
+        #: True once a PTP session has opened successfully in this process.
+        #: It changes which cause `_nothing_on_the_bus()` names first, and
+        #: nothing else -- a body that has answered once has a working cable
+        #: by demonstration, so the cable is the wrong first suspect.
+        self._ever_opened = False
         #: None means "decide from what the body supports" -- the only
         #: safe default, because leaving frames on a body that has no card
         #: target fills its volatile storage.  True/False force it.
@@ -550,12 +555,7 @@ class GPhotoCamera(CameraBackend):
             cam.init()
         except gp.GPhoto2Error as e:
             if e.code == gp.GP_ERROR_MODEL_NOT_FOUND:
-                raise CameraDisconnected(
-                    f"{self.camera_id}: no camera found.  Check the cable "
-                    f"carries data (charge-only micro-USB leads enumerate "
-                    f"nothing at all), and that the body is on and set to "
-                    f"PC Remote."
-                ) from e
+                raise CameraDisconnected(self._nothing_on_the_bus()) from e
             if e.code == gp.GP_ERROR_IO_USB_CLAIM:
                 raise CameraError(
                     f"{self.camera_id}: another process holds the USB device, "
@@ -582,6 +582,45 @@ class GPhotoCamera(CameraBackend):
             raise CameraError(f"{self.camera_id}: {e}") from e
 
         self._camera = cam
+        self._ever_opened = True
+
+    def _nothing_on_the_bus(self) -> str:
+        """
+        `GP_ERROR_MODEL_NOT_FOUND` means the device is not enumerated. Every
+        cause looks identical from here, so the only useful thing the message
+        can do is put the *likely* one first -- and which is likely depends
+        entirely on whether this body has ever answered us.
+
+        Never answered -> it is a setup fault. A charge-only lead is the
+        classic one, and it enumerates nothing at all, which is exactly this
+        error.
+
+        Answered, then vanished -> it is almost always the battery. The
+        A6000 does not warn a tethered host before it shuts down; the device
+        simply stops existing. `2026-08-12`: the body went from serving
+        24.5 MB frames to `no camera found` between two commands, and the
+        message led with "check the cable" -- advice that sends an operator
+        to the one thing that was fine.
+
+        Naming the wrong cause first is not a cosmetic failure. It is the
+        difference between a thirty-second fix and taking the rig apart.
+        """
+        head = f"{self.camera_id}: no camera found -- nothing is enumerated on the bus."
+        battery = (
+            "A flat battery is the usual cause on a body that was working: "
+            "the A6000 gives a tethered host no warning, it just leaves the "
+            "bus.  Swap the cell, switch the body on, confirm PC Remote."
+        )
+        cable = (
+            "Check the cable carries data -- charge-only micro-USB leads "
+            "enumerate nothing at all, which is this exact error -- and that "
+            "the body is on and set to PC Remote."
+        )
+        if getattr(self, "_ever_opened", False):
+            # It worked, then stopped.  Battery first, and say why the
+            # ordering changed so nobody reads it as a guess.
+            return f"{head}  It was answering earlier this run.  {battery}  {cable}"
+        return f"{head}  {cable}  {battery}"
 
     def _reopen(self) -> None:
         """
@@ -1120,6 +1159,30 @@ class GPhotoCamera(CameraBackend):
 
     # -- deep recovery -----------------------------------------------------
 
+    def sony_on_bus(self) -> bool | None:
+        """
+        Is a Sony device enumerated at all?  None when we cannot tell.
+
+        This is the one question that separates "the body is wedged" from
+        "the body is not there", and the two need opposite advice.  A
+        wedged body must not be power-cycled -- that does not clear its
+        buffer and it resets a taped zoom to 16 mm.  A body that has left
+        the bus, because its battery went flat, can only be fixed *by*
+        powering it.  Guessing wrong costs an operator either a calibration
+        or an hour.
+        """
+        try:
+            devices = sorted(pathlib.Path("/sys/bus/usb/devices").iterdir())
+        except OSError:
+            return None
+        for dev in devices:
+            try:
+                if (dev / "idVendor").read_text().strip().lower() == "054c":
+                    return True
+            except OSError:
+                continue
+        return False
+
     def usb_reset(self) -> bool:
         """
         Re-enumerate the camera on the USB bus.  True if a device was reset.
@@ -1206,6 +1269,19 @@ class GPhotoCamera(CameraBackend):
             # are expected to fail and should not exhaust the budget.
             self.reconnect(attempts=5, backoff_s=1.0)
             return
+        if self.sony_on_bus() is False:
+            # Nothing to re-enumerate, so the advice below would be actively
+            # wrong: it forbids the only action that can help.
+            raise CameraDisconnected(
+                f"{self.camera_id}: reconnect failed and there is no Sony "
+                f"device on the USB bus at all, so there was nothing to "
+                f"re-enumerate.  The body has left the bus rather than "
+                f"wedged -- a flat battery is the usual reason, and the "
+                f"A6000 gives a tethered host no warning.  Swap the cell, "
+                f"switch the body on, confirm PC Remote.  Then check the "
+                f"cable: a charge-only lead looks exactly like this from "
+                f"here.  (Expect the E PZ 16-50 to come back at 16 mm.)"
+            )
         raise CameraDisconnected(
             f"{self.camera_id}: reconnect failed and a USB re-enumeration did "
             f"not help.  Pull the cable and put it back -- do not power-cycle "

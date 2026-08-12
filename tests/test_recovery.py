@@ -202,6 +202,10 @@ def test_giving_up_names_the_cable_and_the_card(dev, monkeypatch):
         lambda *a, **k: (_ for _ in ()).throw(CameraDisconnected("no")),
     )
     monkeypatch.setattr(cam, "usb_reset", lambda: False)
+    # The body is still enumerated -- it is wedged, not absent.  Pinned
+    # explicitly rather than left to whatever is plugged into the machine
+    # running the tests.
+    monkeypatch.setattr(cam, "sony_on_bus", lambda: True)
 
     with pytest.raises(CameraDisconnected) as exc:
         cam.recover()
@@ -209,6 +213,50 @@ def test_giving_up_names_the_cable_and_the_card(dev, monkeypatch):
     assert "Pull the cable" in msg
     assert "do not power-cycle" in msg
     assert "card is seated" in msg      # reads succeed, shutter times out
+
+
+def test_giving_up_on_an_absent_body_does_not_forbid_a_power_cycle(dev, monkeypatch):
+    """
+    The opposite case, and the dangerous one.  If the body has left the bus
+    -- a flat battery, 2026-08-12 -- then "do not power-cycle the body" is
+    advice that forbids the only thing that can work.  It must not be said
+    when there is nothing there to power-cycle.
+    """
+    cam, _ = dev
+    monkeypatch.setattr(
+        cam, "reconnect",
+        lambda *a, **k: (_ for _ in ()).throw(CameraDisconnected("no")),
+    )
+    monkeypatch.setattr(cam, "usb_reset", lambda: False)
+    monkeypatch.setattr(cam, "sony_on_bus", lambda: False)
+
+    with pytest.raises(CameraDisconnected) as exc:
+        cam.recover()
+    msg = str(exc.value)
+    assert "do not power-cycle" not in msg
+    assert "battery" in msg
+    assert "16 mm" in msg               # warn before they wonder why scale moved
+
+
+def test_an_unreadable_bus_falls_back_to_the_conservative_message(dev, monkeypatch):
+    """
+    `sony_on_bus()` returns None when sysfs cannot be read.  Unknown must
+    not be treated as absent: telling someone to swap a healthy battery is
+    a smaller error than telling them to power-cycle a wedged body, but it
+    is still an error, and the wedged case is the one we can still fix from
+    software.
+    """
+    cam, _ = dev
+    monkeypatch.setattr(
+        cam, "reconnect",
+        lambda *a, **k: (_ for _ in ()).throw(CameraDisconnected("no")),
+    )
+    monkeypatch.setattr(cam, "usb_reset", lambda: False)
+    monkeypatch.setattr(cam, "sony_on_bus", lambda: None)
+
+    with pytest.raises(CameraDisconnected) as exc:
+        cam.recover()
+    assert "Pull the cable" in str(exc.value)
 
 
 def test_the_base_recover_is_just_a_reconnect(monkeypatch):
@@ -295,6 +343,114 @@ def test_expprogram_is_left_alone(dev):
     """
     cam, _ = dev
     assert all(name != "expprogram" for name, _ in cam.REQUIRED_MODES)
+
+
+# ------------------------------------------- naming the right cause first --
+#
+# Measured on scanner-node-0, 2026-08-12.  The body went from serving
+# 24,513,792-byte ARWs to this, between two commands:
+#
+#     cam0: reconnect failed after 5 attempts: cam0: no camera found.
+#     Check the cable carries data ...
+#     usb_resets: 1
+#
+# The recovery tier behaved perfectly -- retried, escalated to a bus reset,
+# gave up in words.  The words were the problem.  The battery had died, and
+# the message sent the operator to the one component that was demonstrably
+# fine: a cable that had been carrying 24 MB frames all evening cannot be
+# a charge-only lead.
+#
+# GP_ERROR_MODEL_NOT_FOUND cannot distinguish these causes -- the device is
+# simply not enumerated -- so the message cannot know.  What it *can* know
+# is whether this body has ever answered, and that is enough to order the
+# causes by likelihood instead of by the order someone happened to write
+# them in.
+
+def _model_not_found(fake, monkeypatch):
+    def gone():
+        raise FakeError("Could not find the requested device", code=-105)
+    monkeypatch.setattr(fake, "init", gone)
+
+
+def test_a_body_that_never_answered_blames_the_cable_first(monkeypatch, tmp_path):
+    """
+    Nothing has worked yet, so this is a setup fault.  A charge-only lead
+    enumerates nothing at all, which is this exact error.
+    """
+    from scanner.node.backends.gphoto import GPhotoCamera
+
+    monkeypatch.setenv("SCANNER_STAGING_DIR", str(tmp_path / "staging"))
+    fake = install_fake(monkeypatch, capturetarget=False)
+    cam = GPhotoCamera("cam0", 0)
+    _model_not_found(fake, monkeypatch)
+
+    with pytest.raises(CameraDisconnected) as exc:
+        cam._open_session()
+    msg = str(exc.value)
+    assert msg.index("cable") < msg.index("battery")
+
+
+def test_a_body_that_answered_then_vanished_blames_the_battery_first(
+    monkeypatch, tmp_path
+):
+    """
+    The regression this file was extended for.  A cable that has carried
+    frames is not the suspect; the A6000 leaves the bus without warning
+    when the cell goes flat, and that is what this looks like.
+    """
+    from scanner.node.backends.gphoto import GPhotoCamera
+
+    monkeypatch.setenv("SCANNER_STAGING_DIR", str(tmp_path / "staging"))
+    fake = install_fake(monkeypatch, capturetarget=False)
+    cam = GPhotoCamera("cam0", 0)
+    cam.connect()                      # it worked once -- that is the whole signal
+    _model_not_found(fake, monkeypatch)
+
+    with pytest.raises(CameraDisconnected) as exc:
+        cam._open_session()
+    msg = str(exc.value)
+    assert msg.index("battery") < msg.index("cable")
+    # ...and say why the ordering moved, so it does not read as a guess.
+    assert "answering earlier" in msg
+
+
+def test_neither_cause_is_ever_dropped(monkeypatch, tmp_path):
+    """
+    Reorder, never truncate.  The less likely cause is still a cause, and
+    an operator who has already checked the battery needs the next thing to
+    try in the same message rather than in a second failure ten minutes on.
+    """
+    from scanner.node.backends.gphoto import GPhotoCamera
+
+    monkeypatch.setenv("SCANNER_STAGING_DIR", str(tmp_path / "staging"))
+    fake = install_fake(monkeypatch, capturetarget=False)
+    cam = GPhotoCamera("cam0", 0)
+
+    for ever_opened in (False, True):
+        cam._ever_opened = ever_opened
+        _model_not_found(fake, monkeypatch)
+        with pytest.raises(CameraDisconnected) as exc:
+            cam._open_session()
+        msg = str(exc.value)
+        assert "battery" in msg
+        assert "charge-only" in msg
+        assert "PC Remote" in msg
+
+
+def test_ever_opened_survives_a_disconnect(monkeypatch, tmp_path):
+    """
+    `disconnect()` is the normal end of a session, not evidence that the
+    cable was never good.  If it cleared the flag, the very next failure
+    after an ordinary close would blame the cable again.
+    """
+    from scanner.node.backends.gphoto import GPhotoCamera
+
+    monkeypatch.setenv("SCANNER_STAGING_DIR", str(tmp_path / "staging"))
+    install_fake(monkeypatch, capturetarget=False)
+    cam = GPhotoCamera("cam0", 0)
+    cam.connect()
+    cam.disconnect()
+    assert cam._ever_opened is True
 
 
 def test_an_absent_mode_is_recorded_not_fatal(monkeypatch, tmp_path):
