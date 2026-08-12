@@ -392,3 +392,80 @@ def test_failed_probe_says_so(monkeypatch):
     dev = GPhotoCamera("cam0", 0)
     dev.connect()
     assert "config probe failed" in dev.last_error
+
+
+# --------------------------------------------------------------------------
+# a frame that was not secured is not a captured frame
+#
+# Both of these were reproduced on scanner-node-0 (Pi 5, ILCE-6000) on
+# 2026-08-12 by filling the staging tmpfs to ENOSPC.  The node had already
+# fired the shutter and pulled the whole 24.5 MB off the body before the
+# write failed -- so an actuation and a transfer were spent, and the caller
+# was told only "Internal Server Error".
+# --------------------------------------------------------------------------
+
+def test_staging_write_failure_is_reported_as_staging_not_camera(a6000, monkeypatch):
+    import pathlib
+    from scanner.node.backends.base import StagingFull
+
+    dev, _ = a6000
+
+    def enospc(self, data):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(pathlib.Path, "write_bytes", enospc)
+
+    with pytest.raises(StagingFull) as e:
+        dev.capture(seq=1)
+
+    msg = str(e.value)
+    # It must name the real fault. "capture failed" would send an operator
+    # back to the camera, which is the one place nothing is wrong.
+    assert "staging" in msg.lower()
+    # And it must be honest that the expensive part already happened.
+    assert "already downloaded" in msg
+    # The counter must not claim a frame that does not exist.
+    assert dev.frames_captured == 0
+
+
+def test_download_failure_is_not_swallowed(a6000, monkeypatch):
+    """
+    A body with no card holds the frame only for the life of the session.
+
+    If the download fails there is nothing left to fetch later, so
+    returning a CapturedFile with a plausible size_bytes -- as this did
+    until 2026-08-12 -- hands the caller a file_id for a frame that has
+    already ceased to exist.
+    """
+    from scanner.node.backends.base import CameraError
+
+    dev, _ = a6000
+
+    def boom(folder, name):
+        raise CameraError("cam0: download failed")
+
+    monkeypatch.setattr(dev, "_download", boom)
+
+    with pytest.raises(CameraError):
+        dev.capture(seq=1)
+    assert dev.frames_captured == 0
+
+
+def test_preflight_refuses_before_the_shutter(a6000, monkeypatch):
+    """
+    The cheap fix for the expensive failure above: when the space is
+    knowable in advance, never spend the actuation at all.
+    """
+    from scanner.node.backends.base import StagingFull
+
+    dev, cam = a6000
+    fired = []
+    real_capture = cam.capture
+    cam.capture = lambda *a, **k: (fired.append(1), real_capture(*a, **k))[1]
+
+    monkeypatch.setattr(dev, "staging_free_bytes", lambda: 4 * 1024 * 1024)
+
+    with pytest.raises(StagingFull) as e:
+        dev.capture(seq=1)
+    assert "No shutter actuation" in str(e.value)
+    assert fired == [], "the shutter must not have been used"

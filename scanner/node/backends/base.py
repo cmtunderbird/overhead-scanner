@@ -50,6 +50,23 @@ class ConfigUnsupported(CameraError):
     """
 
 
+class StagingFull(CameraError):
+    """
+    The staging area cannot hold the frames this request would produce.
+
+    Deliberately not a camera fault: the body is healthy and the fix is
+    disk, not hardware.  Reported separately because the two demand
+    opposite responses from an operator, and because a node that answers
+    "capture failed" to a full filesystem sends people back to the camera
+    -- which is exactly the wrong place.
+
+    Raised *before* the shutter fires wherever the size is knowable.  A
+    shutter actuation is a consumable: roughly 100k on an A6000, a few
+    hundred per book.  Spending one on a frame that provably cannot be
+    stored is waste with nothing to show for it.
+    """
+
+
 @dataclass
 class CameraSettings:
     iso: int = 200
@@ -100,6 +117,12 @@ class CameraStatus:
     #: accident -- a backend that cannot probe leaves it empty and says so
     #: via `last_error`.
     unsupported_settings: list[str] = field(default_factory=list)
+    #: Headroom left in the staging area, in whole MB, or -1 where the
+    #: backend has no staging area to measure.  Present so the operator
+    #: learns about a filling disk from `/status` rather than from a
+    #: capture that fails at page 300 -- on `scanner-node-0` the staging
+    #: area is a tmpfs, so the host's own `df /` says nothing useful.
+    staging_free_mb: int = -1
 
 
 class CameraBackend(abc.ABC):
@@ -115,6 +138,9 @@ class CameraBackend(abc.ABC):
         self.last_error = ""
         self.effective_capture_target = ""
         self.unsupported_settings: list[str] = []
+        #: Largest frame this backend has actually written.  Used to size
+        #: the staging preflight from measurement rather than from a guess.
+        self._peak_frame_bytes = 0
         self._lock = threading.Lock()
 
     # -- lifecycle ---------------------------------------------------------
@@ -196,7 +222,54 @@ class CameraBackend(abc.ABC):
             tile_index=self.tile_index,
             effective_capture_target=self.effective_capture_target,
             unsupported_settings=list(self.unsupported_settings),
+            staging_free_mb=(
+                -1 if self.staging_free_bytes() < 0
+                else self.staging_free_bytes() // (1024 * 1024)
+            ),
         )
+
+    # -- staging -----------------------------------------------------------
+
+    #: Bytes to assume for a frame before one has ever been measured.
+    #: 25 MiB: an ILCE-6000 compressed ARW is 24,526,080 B.
+    NOMINAL_FRAME_BYTES = 25 * 1024 * 1024
+
+    #: Spare room demanded on top of the frames being requested, so the
+    #: node refuses while there is still space to write a diagnostic, not
+    #: at the exact moment the filesystem stops accepting anything.
+    STAGING_MARGIN_BYTES = 64 * 1024 * 1024
+
+    def staging_free_bytes(self) -> int:
+        """
+        Free space where captured frames are staged, or -1 if not applicable.
+
+        Backends that never write frames to disk leave this at -1 and the
+        preflight below becomes a no-op.
+        """
+        return -1
+
+    def require_staging_space(self, frames: int) -> None:
+        """
+        Refuse now, before the shutter moves, if the frames cannot be stored.
+
+        Called by backends at the top of `capture()`.  The estimate uses the
+        largest frame actually seen on this backend, falling back to
+        NOMINAL_FRAME_BYTES, so it adapts to whatever the body really
+        produces instead of trusting a constant.
+        """
+        free = self.staging_free_bytes()
+        if free < 0:
+            return
+        need = frames * max(self._peak_frame_bytes, self.NOMINAL_FRAME_BYTES)
+        need += self.STAGING_MARGIN_BYTES
+        if free < need:
+            raise StagingFull(
+                f"{self.camera_id}: staging has {free // (1024 * 1024)} MB free, "
+                f"{need // (1024 * 1024)} MB needed for {frames} frame(s) plus margin. "
+                f"No shutter actuation was spent.  The frames already staged have "
+                f"not been collected -- the orchestrator must fetch them, or they "
+                f"must be dropped, before capture can continue."
+            )
 
     def capture_with_retry(
         self, seq: int, frames: int = 1, attempts: int = 2

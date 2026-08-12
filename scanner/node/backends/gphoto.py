@@ -79,6 +79,7 @@ from .base import (
     CameraSettings,
     CapturedFile,
     ConfigUnsupported,
+    StagingFull,
 )
 
 
@@ -419,8 +420,20 @@ class GPhotoCamera(CameraBackend):
             getattr(gp, "GP_ERROR", -1),
         )
 
+    def staging_free_bytes(self) -> int:
+        if self._cache_dir is None:
+            return -1
+        try:
+            return shutil.disk_usage(self._cache_dir).free
+        except OSError:
+            return -1
+
     def capture(self, seq: int, frames: int = 1) -> list[CapturedFile]:
         self._require()
+        # Before the shutter, not after: a full staging area is knowable in
+        # advance, and an actuation spent on a frame that cannot be written
+        # is a consumable burned for nothing.
+        self.require_staging_space(frames)
         out: list[CapturedFile] = []
         with self._lock:
             for f in range(frames):
@@ -452,19 +465,30 @@ class GPhotoCamera(CameraBackend):
         # session. Closing the session discards it, so a deferred
         # read_file() would find nothing. Pull it now.
         if not self.keep_on_camera:
-            try:
-                data = self._download(path.folder, path.name)
-                size = len(data)
-                if self._cache_dir is not None:
-                    dest = self._cache_dir / f"{seq:06d}-{frame_index}-{path.name}"
-                    dest.write_bytes(data)
-                    self._cache[fid] = dest
+            # The frame exists only inside this session, so every failure
+            # below loses it permanently.  None of them may be swallowed:
+            # a capture that did not secure its frame is a failed capture,
+            # however healthy the shutter sounded.
+            data = self._download(path.folder, path.name)
+            size = len(data)
+            self._peak_frame_bytes = max(self._peak_frame_bytes, size)
+            if self._cache_dir is not None:
+                dest = self._cache_dir / f"{seq:06d}-{frame_index}-{path.name}"
                 try:
-                    cam.file_delete(path.folder, path.name)
-                except Exception:  # noqa: BLE001
-                    pass
-            except CameraError as e:
-                self.last_error = str(e)
+                    dest.write_bytes(data)
+                except OSError as e:
+                    free = self.staging_free_bytes()
+                    raise StagingFull(
+                        f"{self.camera_id}: staging write failed after the frame "
+                        f"was already downloaded ({size} B, "
+                        f"{free // (1024 * 1024) if free >= 0 else '?'} MB free): {e}. "
+                        f"The actuation and the transfer are both spent."
+                    ) from e
+                self._cache[fid] = dest
+            try:
+                cam.file_delete(path.folder, path.name)
+            except Exception:  # noqa: BLE001
+                pass
 
         self.frames_captured += 1
         return CapturedFile(

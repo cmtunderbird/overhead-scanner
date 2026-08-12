@@ -451,6 +451,25 @@ else
             warn "/status connected=false${S_ERR:+ -- last_error: $S_ERR}"
             note "normal if no body is plugged in yet; POST /connect once it is"
         fi
+
+        # Staging headroom has to come from the node, not from df: the
+        # service runs with PrivateTmp=yes, so its staging area is a tmpfs
+        # inside a mount namespace this shell cannot see. `df /` on the host
+        # will cheerfully report 100 GB free while the node has none left.
+        S_STAGE="$(get_field staging_free_mb)"
+        if [[ -z "$S_STAGE" || "$S_STAGE" == "-1" ]]; then
+            skip "staging headroom (backend does not stage frames to disk)"
+        elif [[ "$S_STAGE" -lt 300 ]]; then
+            fail "/status staging_free_mb=$S_STAGE -- under the ~290 MB a 'max' profile
+        needs. Captures will start refusing with 507. Frames are staged in RAM
+        and nothing frees them automatically: the orchestrator must collect
+        them via /files."
+        elif [[ "$S_STAGE" -lt 1000 ]]; then
+            warn "/status staging_free_mb=$S_STAGE -- room for roughly $((S_STAGE / 25))
+        more frames. Collect the staged frames before starting a long run."
+        else
+            pass "/status staging_free_mb=$S_STAGE (~$((S_STAGE / 25)) frames of headroom)"
+        fi
         detail "$STATUS_JSON"
     else
         fail "GET /status returned nothing"
