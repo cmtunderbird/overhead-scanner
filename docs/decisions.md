@@ -300,7 +300,7 @@ noise.
 
 And throughput is bounded by one inequality: transfer time per spread must stay
 below page-turn time, or the queue grows without bound. At 24 MB per ARW over
-~15 MB/s of USB 2.0 PTP and a 4 s page turn, that is two to three frames
+the measured 9.25 MB/s of USB 2.0 PTP and a 4 s page turn, that is one frame
 maximum sustainable. `clean` (3) and `max` (9) exist for pages that warrant
 them.
 

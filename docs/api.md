@@ -188,7 +188,8 @@ not exceptional — it is Tuesday — and every backend must recover from it.
 ### The mock backend
 
 Not a stub that returns a fixed image. It renders a **different page each
-capture**, models transfer time against a real 24 MB / 15 MB/s budget, and can
+capture**, models transfer time against a real 24.5 MB / 9.25 MB/s budget
+(measured on the rig, 2026-08-12), and can
 be told to drop its PTP session periodically:
 
 ```python
@@ -264,9 +265,9 @@ exactly the layout `scanner process` expects.
 ```
 
 The inequality that matters: **transfer time per spread must stay below
-page-turn time**, or the queue grows without bound. At ~15 MB/s and a 4 s page
-turn that is ~60 MB per camera — two to three frames maximum sustainable, which
-is why `standard` is one frame.
+page-turn time**, or the queue grows without bound. Measured at **2.65 s per
+frame** (9.25 MB/s, no card buffer, transfer serial with capture), a 4 s page
+turn sustains **one frame** — which is why `standard` is one frame.
 
 ---
 

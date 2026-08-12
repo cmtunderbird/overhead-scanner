@@ -211,18 +211,23 @@ cause of "it worked, then it stopped".
 
 ## Throughput budget
 
-24 MB per ARW; Sony USB 2.0 PTP runs 10–15 MB/s.
+**Measured 2026-08-12** on the real rig: 24.53 MB per ARW at **9.25 MB/s**,
+**~2.65 s per frame** end to end. The earlier 10–15 MB/s was an assumption.
 
 | Profile | Frames/camera | Data | Time | Use |
 |---|---|---|---|---|
-| `standard` | 1 | 24 MB | ~2 s | default |
-| `clean` | 3 | 72 MB | ~6 s | faded or very fine print |
-| `max` | 9 | 216 MB | ~15–22 s | rare pages only |
+| `standard` | 1 | 24.5 MB | **2.65 s** | default |
+| `clean` | 3 | 73.6 MB | **7.96 s** (measured) | faded or very fine print |
+| `max` | 9 | 220.7 MB | ~24 s (extrapolated) | rare pages only |
+
+Three frames cost three times one frame to within 0.1 s: **there is no burst
+discount**, and no card buffer to hide behind — this body has no
+`capturetarget`, so transfer is serial with capture.
 
 **The sustainable burst size is set by one inequality: transfer time ≤ page-turn
-time**, or the queue grows without bound. At ~15 MB/s and a 4 s page turn that is
-~60 MB per camera — two to three frames maximum sustainable. Hence `standard` is
-one frame.
+time**, or the queue grows without bound. At 2.65 s per frame and a 4 s page turn
+that is **one frame**, with a second only if the operator is slower than 5.3 s
+per page. Hence `standard` is one frame.
 
 Stacking here is **noise reduction only**: no IBIS and a rigid mount mean no
 sub-pixel dither, so there is no true multi-frame resolution gain, just √N.

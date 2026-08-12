@@ -141,19 +141,54 @@ Stacking on this rig is **noise reduction only** — no IBIS and a rigid mount m
 
 ## 5. Throughput budget
 
-24 MB per ARW; Sony USB 2.0 PTP runs ~10–15 MB/s.
+**Measured, 2026-08-12, on `scanner-node-0` (Pi 5 + ILCE-6000 over USB 2.0
+PTP).** This section previously assumed 10–15 MB/s and a card buffer. Both were
+wrong, and the conclusion changes with them.
+
+| | Measured |
+|---|---|
+| Frame size | **24.53 MB** (compressed ARW, fixed size) |
+| Per frame, end to end | **~2.65 s** (2.478–2.739 over five consecutive) |
+| Throughput | **9.25 MB/s** |
+| `clean` profile, 3 frames | **7.96 s** — 2.495 / 2.621 / 2.629 |
+
+For comparison the same body through WSL2 + USB/IP on the laptop managed
+7.0 MB/s, so the node is the faster transport.
+
+**There is no burst discount.** Three frames cost three times one frame, to
+within 0.1 s. Nothing is pipelined and nothing is hidden.
 
 ```
-1 frame/camera : 24 MB  → ~2 s      → ~2-3 s per spread
-3 frames       : 72 MB  → ~6 s
-9 frames       : 216 MB → ~15-22 s
+1 frame/camera : 24.5 MB  → ~2.65 s
+3 frames       : 73.6 MB  → ~7.96 s   (measured)
+9 frames       : 220.7 MB → ~24 s     (extrapolated linearly)
 ```
 
-**The sustainable burst size is set by one inequality: transfer time ≤ page-turn time**, or the queue grows without bound. At ~15 MB/s and a 4 s page turn that is ~60 MB per camera — **2 to 3 frames maximum sustainable**. Hence `standard` = 1.
+### There is no card buffer
 
-Shoot to card and drain in the background; the ~21-RAW buffer absorbs any burst comfortably.
+The original plan was to shoot to card and drain in the background, letting a
+~21-RAW buffer absorb any burst. **The ILCE-6000 has no `capturetarget` key at
+all** — not defaulted, absent from the config tree — so frames stream to the
+host and transfer is **serial with capture**. Fitting an SD card does not change
+this: the card is not even exposed over PTP in PC Remote mode. The buffer that
+was supposed to absorb bursts does not exist.
 
-**A 400-page book** = 200 spreads ≈ **9.4 GB** of ARW at `standard`, roughly **10 minutes** of capture.
+### What that leaves
+
+**The sustainable burst is still set by one inequality: transfer time ≤
+page-turn time**, or the queue grows without bound. At 2.65 s per frame and a
+4 s page turn that is **one frame** — a second only if the operator is slower
+than 5.3 s per page. Hence `standard` = 1, now for a measured reason rather than
+an assumed one.
+
+`clean` and `max` remain available and work correctly, but they are **not**
+sustainable at page-turn cadence. They are for the rare page that justifies
+stopping for it.
+
+**A 400-page book** = 200 spreads ≈ **9.8 GB** of ARW at `standard`, and
+**~9 minutes** of pure capture time — which is not the constraint. Staging is:
+the node holds frames in a tmpfs capped at 8 GB, or about **320 frames**, and
+nothing frees them automatically. The orchestrator must collect them as it goes.
 
 ---
 
