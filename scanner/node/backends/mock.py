@@ -87,6 +87,26 @@ class MockCamera(CameraBackend):
     def model(self) -> str:
         return "Sony Alpha-A6000 (mock)"
 
+    #: A real ILCE-6000's list, so the exposure calculator snaps to the same
+    #: values against the mock as it will against the body.
+    SHUTTER_CHOICES = [
+        "30", "25", "20", "15", "13", "10", "8", "6", "5", "4", "32/10",
+        "25/10", "2", "16/10", "13/10", "1", "8/10", "6/10", "5/10", "4/10",
+        "1/3", "1/4", "1/5", "1/6", "1/8", "1/10", "1/13", "1/15", "1/20",
+        "1/25", "1/30", "1/40", "1/50", "1/60", "1/80", "1/100", "1/125",
+        "1/160", "1/200", "1/250", "1/320", "1/400", "1/500", "1/640",
+        "1/800", "1/1000", "Bulb",
+    ]
+
+    def config_choices(self, name: str) -> list[str]:
+        if name == "shutterspeed":
+            return list(self.SHUTTER_CHOICES)
+        if name == "iso":
+            return ["Auto ISO", "100", "200", "400", "800", "1600", "3200"]
+        if name == "f-number":
+            return ["f/3.5", "f/4", "f/5.6", "f/8", "f/11", "f/16"]
+        return []
+
     def apply_settings(self, settings: CameraSettings) -> None:
         self._require_connection()
         time.sleep(0.02)

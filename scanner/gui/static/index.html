@@ -183,6 +183,32 @@ footer{border-top:1px solid var(--line);background:var(--panel);padding:8px 12px
         <div id="focusOut"></div>
       </div>
 
+      <div class="tab" data-t="expose">
+        <h3>Exposure</h3>
+        <div class="note">
+          <b>1.</b> Mode dial to <b>A</b>, aperture f/8, ISO 100.<br>
+          <b>2.</b> Aim at the page under the lighting you will actually use.<br>
+          <b>3.</b> Press Meter. The camera solves for shutter; we correct it.<br>
+          <b>4.</b> Dial to <b>M</b> and enter the values below.
+        </div>
+        <div class="note">A meter renders whatever it sees as <b>middle grey</b>,
+          so aimed at white paper it underexposes by about two stops. The
+          correction below is measured from where the paper actually landed in
+          the frame, not assumed.</div>
+        <div class="row">
+          <div><label>Shoot at ISO</label><input id="expIso" value="100"></div>
+          <div><label>Shoot at f/</label><input id="expAp" value="8"></div>
+        </div>
+        <div class="btns">
+          <button class="primary" id="btnMeter">Meter</button>
+          <button id="btnMeterApply">Send to camera</button>
+        </div>
+        <div id="expOut"></div>
+        <div class="note">The mode dial cannot be set over PTP — it is the one
+          setting that must be moved by hand. Everything else here is applied
+          for you.</div>
+      </div>
+
       <div class="tab" data-t="rig">
         <h3>Mode</h3>
         <div class="field"><label>Coverage</label>
@@ -243,7 +269,8 @@ const post = (p, body) => api(p, {method:'POST', headers:{'Content-Type':'applic
 let STATE = null, focusTimer = null, streaming = {};
 
 /* ---------------- tabs ---------------- */
-const TABS = [['capture','capture'],['focus','focus'],['rig','rig'],['nodes','cameras']];
+const TABS = [['capture','capture'],['focus','focus'],['expose','exposure'],
+              ['rig','rig'],['nodes','cameras']];
 $('#tabs').innerHTML = TABS.map(([id,lab],i)=>
   `<button data-t="${id}" class="${i===0?'on':''}">${lab}</button>`).join('');
 $('#tabs').onclick = e => {
@@ -404,6 +431,76 @@ $('#btnFocusLoop').onclick = e => {
   if(focusTimer){ clearInterval(focusTimer); focusTimer=null; e.target.textContent='Auto-repeat'; }
   else { e.target.textContent='Stop repeating'; measureFocus();
          focusTimer = setInterval(measureFocus, 4000); }
+};
+
+/* ---------------- exposure ---------------- */
+let lastMeter = null;
+
+function meterRow(k, v){ return `<tr><td>${k}</td><td>${v}</td></tr>`; }
+
+async function meterOnce(){
+  const out = $('#expOut');
+  out.innerHTML = '<div style="color:var(--dim)">metering…</div>';
+  const iso = $('#expIso').value, ap = $('#expAp').value;
+  let html = '';
+  lastMeter = null;
+  for(const n of (STATE?.nodes||[]).filter(n=>n.reachable && n.connected)){
+    try{
+      const q = `?iso=${encodeURIComponent(iso)}&aperture=${encodeURIComponent(ap)}`;
+      const d = await (await fetch(`/api/meter/${n.camera_id}${q}`)).json();
+      if(d.detail){ html += `<div class="err">${n.camera_id}: ${d.detail}</div>`; continue; }
+      lastMeter = d;
+      const m = d.metered, r = d.recommend;
+      html += `<h3>${n.camera_id} — dial these in M</h3>
+        <table>
+          ${meterRow('ISO', r.iso)}
+          ${meterRow('Aperture', 'f/'+r.aperture)}
+          ${meterRow('Shutter', '<b>'+r.shutter+'</b> s')}
+        </table>
+        <h3>How that was reached</h3>
+        <table>
+          ${meterRow('metered', `ISO ${m.iso} · f/${m.aperture} · ${
+              m.shutter_s>=1 ? m.shutter_s+'s' : '1/'+Math.round(1/m.shutter_s)+'s'}`)}
+          ${meterRow('paper landed at', m.paper_level===null?'—':m.paper_level+'/255')}
+          ${meterRow('correction', (r.stops_applied>0?'+':'')+r.stops_applied+' stops')}
+          ${meterRow('basis', r.basis === 'measured'
+              ? '<span style="color:#7ac07a">measured from the frame</span>'
+              : '<span style="color:#d0a020">assumed (+2 rule)</span>')}
+          ${meterRow('reading from', d.source === 'exif' ? "the file's EXIF"
+              : "the camera's own settings")}
+          ${r.snap_error_stops ? meterRow('nearest available',
+              (r.snap_error_stops>0?'+':'')+r.snap_error_stops+' stops off ideal') : ''}
+        </table>`;
+      if(!d.choices_known) html += `<div class="note">The body did not report its
+        shutter list, so the value above was not snapped to one it offers.</div>`;
+      for(const w of (d.warnings||[])) html += `<div class="note">⚠ ${w}</div>`;
+    }catch(err){ html += `<div class="err">${n.camera_id}: ${err}</div>`; }
+  }
+  out.innerHTML = html || '<div class="err">no camera connected</div>';
+}
+
+$('#btnMeter').onclick = async e => {
+  e.target.disabled = true;
+  try{ await meterOnce(); } finally { e.target.disabled = false; }
+};
+
+$('#btnMeterApply').onclick = async e => {
+  if(!lastMeter){ $('#expOut').innerHTML += '<div class="err">meter first</div>'; return; }
+  const r = lastMeter.recommend;
+  e.target.disabled = true;
+  try{
+    const d = await post('/api/config', {iso: Math.round(r.iso),
+                                         shutter: r.shutter,
+                                         aperture: String(r.aperture)});
+    // Report refusals rather than assuming they took: Sony rejects shutter
+    // and aperture over PTP unless the dial is on M.
+    const bad = (d.results||[]).filter(x=>x.error);
+    $('#expOut').innerHTML += bad.length
+      ? `<div class="err">${bad.map(b=>b.camera_id+': '+b.error).join('<br>')}</div>`
+      : `<div class="note" style="border-color:#7ac07a">applied — now verify with a
+         real capture before trusting it</div>`;
+  }catch(err){ $('#expOut').innerHTML += `<div class="err">${err}</div>`; }
+  finally{ e.target.disabled = false; }
 };
 
 /* ---------------- capture ---------------- */

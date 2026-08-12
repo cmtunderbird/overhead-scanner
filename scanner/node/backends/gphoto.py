@@ -324,6 +324,16 @@ class GPhotoCamera(CameraBackend):
         except Exception as e:  # noqa: BLE001
             raise CameraError(f"{self.camera_id}: cannot read {name}: {e}") from e
 
+    def config_choices(self, name: str) -> list[str]:
+        cam, gp = self._require()
+        if self._config_paths and name not in self._config_paths:
+            return []
+        try:
+            node = cam.get_config().get_child_by_name(name)
+            return [str(c) for c in node.get_choices()]
+        except Exception:  # noqa: BLE001
+            return []
+
     def model(self) -> str:
         cam, gp = self._require()
         try:
