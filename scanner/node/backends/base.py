@@ -460,10 +460,30 @@ class CameraBackend(abc.ABC):
                 f"must be dropped, before capture can continue."
             )
 
+    def recover(self) -> None:
+        """
+        Get the camera working again, escalating as far as this backend can.
+
+        The base implementation is just `reconnect()`.  A backend with a
+        deeper tier overrides this.
+
+        **It exists as a named seam, and that is the whole point.**  PR #9
+        added `usb_reset()` and a `recover()` that escalates to it, and
+        then left both unreachable, because `capture_with_retry` went on
+        calling `reconnect()` directly.  A recovery tier nothing invokes
+        looks exactly like protection and provides none -- the same defect
+        as `release_cache()` sitting there with no caller, shipped in the
+        very change that fixed it.
+
+        Every recovery path routes through here so that adding a tier is
+        enough to make it reachable.
+        """
+        self.reconnect()
+
     def capture_with_retry(
         self, seq: int, frames: int = 1, attempts: int = 2
     ) -> list[CapturedFile]:
-        """Capture, reconnecting once if the session dropped mid-command."""
+        """Capture, recovering once if the link dropped mid-command."""
         for i in range(attempts):
             try:
                 return self.capture(seq, frames)
@@ -471,5 +491,30 @@ class CameraBackend(abc.ABC):
                 self.last_error = str(e)
                 if i == attempts - 1:
                     raise
-                self.reconnect()
+                self.recover()
+        raise CameraError("unreachable")
+
+    def preview_with_retry(self, attempts: int = 2) -> bytes:
+        """
+        Live view, with the same recovery `capture()` has had all along.
+
+        Measured on `scanner-node-0`, 2026-08-12: after ~7 hours idle the
+        body stopped answering and `/preview` returned
+        `[-7] I/O problem` -- a code `_session_lost_codes()` already
+        classifies as "this session is finished, open a new one".  The
+        capture path recovered from it and the preview path did not,
+        because `preview()` called the camera directly.
+
+        The asymmetry is the bug.  An operator framing a page is the most
+        likely person to meet an idle session, since framing is what you
+        do *after* leaving the rig alone.
+        """
+        for i in range(attempts):
+            try:
+                return self.preview()
+            except CameraDisconnected as e:
+                self.last_error = str(e)
+                if i == attempts - 1:
+                    raise
+                self.recover()
         raise CameraError("unreachable")

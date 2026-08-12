@@ -37,7 +37,18 @@ Four things will cost you an evening each if you skip them:
 
    The session also drops when idle.  `capture_with_retry` in the base
    class recovers -- but only for codes `_session_lost_codes()` reports,
-   which is why `GP_ERROR` (-1) had to be added to it.
+   which is why `GP_ERROR` (-1) and later `GP_ERROR_TIMEOUT` (-10) both
+   had to be added to it.
+
+   And a dropped session is not the worst case.  After ~7 hours idle on
+   2026-08-12 the link *wedged*: every path returned -10, a full
+   `systemctl restart` changed nothing, and the `gphoto2` CLI failed
+   identically -- which exonerated this code and located the fault in the
+   device.  A reopen cannot help, because `cam.init()` is itself what
+   times out.  Only `usb_reset()` cleared it.  Hence the tiers in
+   `recover()`, and hence every recovery path routing through that one
+   method: the previous arrangement called `reconnect()` directly, so the
+   tier that actually works had no caller at all.
 
 3. **`capturetarget` does not exist on every body.**  On the ILCE-6000 it
    is absent from the PTP config tree entirely -- not defaulted, absent.
@@ -294,6 +305,12 @@ class GPhotoCamera(CameraBackend):
     #: deliberately absent: it is read-only on Sony bodies.
     SETTING_KEYS = ("iso", "shutterspeed", "f-number")
 
+    #: Seconds to wait after a USB re-enumeration before touching the
+    #: device again.  Measured 2026-08-12: 2 s was not enough and a
+    #: connect ~18 s later still failed, while the CLI succeeded about a
+    #: minute in.  This is the last recovery tier; patience is cheap here.
+    USB_SETTLE_S = 8.0
+
     #: Pause before re-reading a body that answered with placeholders.
     #: One second: long enough for a waking ILCE-6000 to settle, short
     #: enough that connect() does not feel hung.
@@ -466,6 +483,18 @@ class GPhotoCamera(CameraBackend):
                     f"  over SSH or under WSL -> no local seat, so uaccess\n"
                     f"  grants nothing.  Join plugdev instead:\n"
                     f"    sudo usermod -aG plugdev $USER   # then log in again"
+                ) from e
+            if e.code in self._session_lost_codes():
+                # Classified, not swallowed.  `_reopen()` failing this way
+                # used to raise a plain CameraError, which
+                # `capture_with_retry` does not catch -- so a wedged link
+                # produced one 503 and no recovery attempt at all, even
+                # though the tier that fixes it was sitting right there.
+                raise CameraDisconnected(
+                    f"{self.camera_id}: cannot open a session: {e}.  The link "
+                    f"is wedged rather than merely idle; a reconnect will not "
+                    f"clear it and neither will power-cycling the body.  Only "
+                    f"a USB re-enumeration does."
                 ) from e
             raise CameraError(f"{self.camera_id}: {e}") from e
 
@@ -707,6 +736,14 @@ class GPhotoCamera(CameraBackend):
             getattr(gp, "GP_ERROR_IO", -7),
             getattr(gp, "GP_ERROR_IO_USB_FIND", -52),
             getattr(gp, "GP_ERROR", -1),
+            # -10, GP_ERROR_TIMEOUT.  Measured on scanner-node-0,
+            # 2026-08-12: after ~7 hours idle the body stopped answering
+            # and every path -- init, capture, preview, and the gphoto2
+            # CLI alike -- returned "[-10] Timeout reading from or writing
+            # to the port".  It was absent from this tuple, so the one
+            # failure that actually occurs on a wedged link was classified
+            # as a generic CameraError and no retry ever fired.
+            getattr(gp, "GP_ERROR_TIMEOUT", -10),
         )
 
     def staging_free_bytes(self) -> int:
@@ -1054,17 +1091,26 @@ class GPhotoCamera(CameraBackend):
                 self.disconnect()
             except Exception:  # noqa: BLE001
                 pass
-            time.sleep(2.0)
+            time.sleep(self.USB_SETTLE_S)
         return reset_any
 
     def recover(self) -> None:
         """
         Escalate: reopen the session, then re-enumerate the bus.
 
-        `reconnect()` alone is the right first move and is usually enough.
-        It is not enough for the one failure it cannot see -- a body whose
-        buffer is holding a stale frame will reconnect perfectly and go on
-        serving the wrong image.
+        `reconnect()` alone is the right first move and is usually enough
+        for an idle session.  It cannot help a *wedged* link, because the
+        thing that times out is `cam.init()` itself -- measured on
+        `scanner-node-0`, 2026-08-12, where a full `systemctl restart`
+        left the fault exactly where it was and the `gphoto2` CLI failed
+        identically.  A fresh process does not clear a wedge; only a bus
+        re-enumeration does.
+
+        The reset is deliberately patient afterwards.  The device
+        re-enumerates and is not ready the instant the ioctl returns: on
+        12 Aug a connect roughly 18 s after the reset still failed, while
+        the same command a minute later succeeded twice.  Being slow here
+        costs one recovery; being hasty costs the node.
         """
         try:
             self.reconnect()
@@ -1072,13 +1118,18 @@ class GPhotoCamera(CameraBackend):
         except CameraError:
             pass
         if self.usb_reset():
-            self.reconnect()
+            # Longer backoff than the ordinary reconnect: the bus has just
+            # dropped and re-added the device, so the first two attempts
+            # are expected to fail and should not exhaust the budget.
+            self.reconnect(attempts=5, backoff_s=1.0)
             return
         raise CameraDisconnected(
             f"{self.camera_id}: reconnect failed and a USB re-enumeration did "
             f"not help.  Pull the cable and put it back -- do not power-cycle "
             f"the body; that does not clear its buffer and it resets a taped "
-            f"zoom to 16 mm."
+            f"zoom to 16 mm.  If captures fail while reads succeed, check the "
+            f"card is seated: a cardless body answers config queries and then "
+            f"times out on the shutter."
         )
 
     def preview(self) -> bytes:
@@ -1087,4 +1138,8 @@ class GPhotoCamera(CameraBackend):
             cam_file = cam.capture_preview()
             return memoryview(cam_file.get_data_and_size()).tobytes()
         except gp.GPhoto2Error as e:
+            if e.code in self._session_lost_codes():
+                raise CameraDisconnected(
+                    f"{self.camera_id}: session lost during preview: {e}"
+                ) from e
             raise CameraError(f"{self.camera_id}: preview failed: {e}") from e

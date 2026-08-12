@@ -289,3 +289,56 @@ def test_the_calibrated_focal_length_can_be_recorded(client):
     assert r.status_code == 200
     assert r.json()["expected_focal_length_mm"] == 30.0
     assert c.get("/status").json()["expected_focal_length_mm"] == 30.0
+
+
+# ---------------------------------------------------------- recovery ----
+#
+# On 2026-08-12 the only way to clear a genuinely wedged A6000 was to SSH
+# into the node and run a Python one-liner, because the tier that fixes it
+# had no route and no caller.
+
+def test_recover_is_reachable_over_http(client):
+    c, cam = client
+    r = c.post("/recover")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["recovered"] is True
+    assert "status" in body
+    assert body["status"]["camera_id"] == cam.camera_id
+
+
+def test_recover_reports_a_failure_rather_than_pretending(client, monkeypatch):
+    from scanner.node.backends.base import CameraDisconnected
+
+    c, cam = client
+    monkeypatch.setattr(
+        cam, "recover",
+        lambda: (_ for _ in ()).throw(
+            CameraDisconnected("cam0: pull the cable and put it back")),
+    )
+    r = c.post("/recover")
+    assert r.status_code == 503
+    assert "pull the cable" in r.json()["detail"].lower()
+
+
+def test_preview_survives_one_dropped_session(client, monkeypatch):
+    """
+    /preview had no recovery at all until now, while /capture had it from
+    the start.  The asymmetry was the bug.
+    """
+    from scanner.node.backends.base import CameraDisconnected
+
+    c, cam = client
+    calls = {"n": 0}
+    real = cam.preview
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise CameraDisconnected("cam0: session lost during preview")
+        return real()
+
+    monkeypatch.setattr(cam, "preview", flaky)
+    r = c.get("/preview")
+    assert r.status_code == 200
+    assert calls["n"] == 2          # it retried rather than giving up

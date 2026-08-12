@@ -188,8 +188,13 @@ def create_app(camera: CameraBackend | None = None) -> FastAPI:
 
     @api.get("/preview")
     def preview(request: Request):
+        # `preview_with_retry`, not `preview`.  An operator framing a page
+        # is the most likely person to meet an idle session -- framing is
+        # what you do after leaving the rig alone -- and until 2026-08-12
+        # this route was the one path with no recovery at all.
         try:
-            return Response(content=cam_of(request).preview(), media_type="image/jpeg")
+            return Response(content=cam_of(request).preview_with_retry(),
+                            media_type="image/jpeg")
         except CameraError as e:
             raise HTTPException(status_code=503, detail=str(e)) from e
 
@@ -210,8 +215,12 @@ def create_app(camera: CameraBackend | None = None) -> FastAPI:
             while True:
                 t0 = time.perf_counter()
                 try:
-                    jpg = cam.preview()
+                    jpg = cam.preview_with_retry()
                 except CameraError:
+                    # The stream ends. It cannot report why -- the headers
+                    # went out long ago -- which is precisely why the
+                    # recovery has to happen here rather than being left
+                    # to whoever notices the picture stopped.
                     break
                 yield (b"--frame\r\nContent-Type: image/jpeg\r\n"
                        b"Content-Length: " + str(len(jpg)).encode() + b"\r\n\r\n"
@@ -481,6 +490,36 @@ def create_app(camera: CameraBackend | None = None) -> FastAPI:
         cam.expected_focal_length_mm = float(req.expected_focal_length_mm)
         cam.optical_alarm = ""
         return asdict(cam.status())
+
+    @api.post("/recover")
+    def recover(request: Request):
+        """
+        Escalate recovery by hand: reconnect, then re-enumerate the bus.
+
+        `POST /connect` only reopens the PTP session, which is the right
+        first move and useless against a wedged link -- the thing that
+        times out there is the USB open itself. This goes further, and it
+        exists as a route because on 2026-08-12 the only way to clear a
+        genuinely wedged A6000 was to SSH in and run a Python one-liner.
+        An operator should not need a shell to un-stick a camera.
+
+        Slow by design: a bus re-enumeration plus a patient reconnect can
+        take the better part of a minute.
+        """
+        cam = cam_of(request)
+        before = asdict(cam.status())
+        try:
+            cam.recover()
+        except CameraError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        after = asdict(cam.status())
+        return {
+            "recovered": True,
+            "usb_resets": after.get("usb_resets"),
+            "session_reopens": after.get("session_reopens"),
+            "connected_before": before.get("connected"),
+            "status": after,
+        }
 
     @api.get("/healthz")
     def healthz():

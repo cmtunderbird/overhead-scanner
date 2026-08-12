@@ -235,6 +235,30 @@ The orchestrator's recovery path after **its own** restart: ask what survived
 rather than assume. `evicted` is non-zero only when the cap has dropped frames,
 which means something captured without claiming.
 
+### `POST /recover`
+
+Escalate recovery by hand: reconnect, then **re-enumerate the USB device**.
+
+`POST /connect` only reopens the PTP session. That is the right first move and
+useless against a *wedged* link, because the thing that times out there is the
+USB open itself — measured on `scanner-node-0`, 2026-08-12, where a full
+`systemctl restart` left the fault exactly where it was and the `gphoto2` CLI
+failed identically. Only a bus re-enumeration cleared it.
+
+```json
+{"recovered": true, "usb_resets": 1, "session_reopens": 3,
+ "connected_before": false, "status": {...}}
+```
+
+**Slow by design** — a re-enumeration plus a patient reconnect can take the
+better part of a minute. The device is not ready the instant the ioctl returns.
+
+**503** if it could not be recovered, and the message names the cable rather
+than the power switch: power-cycling the body does not clear its buffer, and it
+resets a taped zoom to 16 mm. If reads succeed while captures time out, check
+the card is seated — a cardless body answers config queries and then hangs on
+the shutter.
+
 ### `POST /optics`
 
 ```json
