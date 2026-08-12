@@ -48,7 +48,8 @@ check `GET /status`.
 `capturetarget` defaults vary by body and firmware and silently decide whether
 files land in camera RAM or on the card. Set it explicitly (the backend does
 this on connect). Then check your actual transfer rate against `throughput()` —
-USB 2.0 PTP on these bodies runs 10–15 MB/s, so a 24 MB ARW is ~2 s and no
+USB 2.0 PTP on these bodies runs a measured 9.25 MB/s, so a 24.5 MB ARW is
+~2.65 s and no
 amount of software makes it faster.
 
 ---

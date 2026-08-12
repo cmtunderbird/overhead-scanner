@@ -46,8 +46,13 @@ class MockCamera(CameraBackend):
         *,
         scale: float = 0.25,
         page_px_per_mm: float = 6.0,
-        transfer_mb_s: float = 15.0,
-        file_mb: float = 24.0,
+        # Measured on scanner-node-0 (Pi 5 + ILCE-6000), 2026-08-12:
+        # 24.53 MB per ARW at 9.25 MB/s, ~2.65 s end to end.  The previous
+        # 15 MB/s / 24 MB was an assumption, and a mock that is optimistic
+        # about the link lets timing bugs pass in CI that the real rig then
+        # finds.
+        transfer_mb_s: float = 9.25,
+        file_mb: float = 24.5,
         drop_every: int = 0,
         defects: CameraDefects | None = None,
         seed: int = 0,

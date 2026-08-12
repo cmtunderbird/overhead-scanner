@@ -287,7 +287,8 @@ On a 2291 × 1620 canvas (tests' reduced scale):
 
 Full 24 MP frames scale roughly with pixel count. The blueprint's target is
 ≤ 3 s per spread at the `standard` capture profile, and capture — not
-processing — is the binding constraint: 24 MB per ARW over ~15 MB/s of USB 2.0
+processing — is the binding constraint: 24.5 MB per ARW over a measured
+9.25 MB/s of USB 2.0
 PTP is about 2 s per camera, which is why `standard` is a single frame.
 
 ---

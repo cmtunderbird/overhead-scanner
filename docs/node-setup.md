@@ -293,7 +293,8 @@ Two differences that both bite on Lite: `opencv-contrib-python` links
 `-headless` build is what you want, and the node only encodes JPEGs, resizes
 previews and runs a Laplacian. And plain `uvicorn` instead of `uvicorn[standard]`,
 which drops three compiled wheels in exchange for a reload watcher an appliance
-must never use. The bottleneck is USB 2.0 PTP at 10–15 MB/s, not the event loop.
+must never use. The bottleneck is USB 2.0 PTP at a measured 9.25 MB/s, not the
+event loop.
 
 **Persistent, capped journal.** Pi OS ships `Storage=volatile`, so by default
 every log is discarded at reboot — precisely the logs you want after an
