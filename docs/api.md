@@ -48,9 +48,31 @@ derived from the hostname so **both Pis can run the identical SD image**.
   "last_error": "",
   "busy": false,
   "tile_index": 0,
+  "staging_free_mb": 7945,
+  "staging_volatile": false,
+  "staged_frames": 3,
+  "frames_evicted": 0,
+  "frames_recovered": 0,
+  "session_reopens": 42,
+  "usb_resets": 0,
+  "focal_length_mm": 30.0,
+  "expected_focal_length_mm": 30.0,
+  "optical_alarm": "",
   "profiles": {"standard": 1, "clean": 3, "max": 9}
 }
 ```
+
+The fields worth understanding, because each exists to stop something silent:
+
+| Field | Reading it |
+|---|---|
+| `staging_volatile` | `true` means staged frames will **not** survive a restart of the service — and `Restart=always` means there will be one. Should be `false` on a provisioned node |
+| `staged_frames` | Frames captured and not yet claimed. This is the number that fills; `staging_free_mb` is only its consequence |
+| `frames_evicted` | The cap has **dropped** this many frames. Non-zero means something captured without claiming — the orchestrator died mid-run, or is calling `GET /files` and never `DELETE` |
+| `frames_recovered` | Frames adopted from a previous run of this process. A receipt, not a fault: the service restarted with frames outstanding and they survived |
+| `session_reopens` | PTP sessions opened. Rises once per capture by design — `session_per_capture` is why capture works at all |
+| `usb_resets` | Bus re-enumerations. The recovery tier below reconnect, and the only one that clears a frame stuck in the body's RAM. Rising on an otherwise healthy node is a cable or a power problem |
+| `optical_alarm` | Non-empty means the lens moved since calibration. Capture goes on working, which is exactly why it needs saying out loud |
 
 Never fails because the camera is missing — `connected: false` is a status, not
 an error. A node that refuses to start when its camera is unplugged is a node
@@ -136,24 +158,93 @@ holds the per-region peak and shows the current score against it — see
   "camera_id": "cam0",
   "profile": "standard",
   "files": [{
-    "file_id": "/store_00010001/DCIM/100MSDCF/DSC00042.ARW",
+    "file_id": "cam0/000017/0/capt_DSC00001.ARW",
     "camera_id": "cam0", "seq": 17, "frame_index": 0,
     "size_bytes": 24117248, "latency_s": 1.83,
-    "content_type": "image/x-sony-arw", "path": "..."
+    "content_type": "image/x-sony-arw", "path": "/capt_DSC00001.ARW"
   }]
 }
 ```
 
 `seq` is **echoed, never invented**. Pairing depends on it.
 
+`file_id` is minted by the node; `path` is where the frame sat on the camera.
+They are separate because **the camera-side name is not unique**: with
+`session_per_capture` the body restarts its own numbering every session, so
+every frame of a run arrives as `capt_DSC00001.ARW`.
+
 Capture retries once through `capture_with_retry`, so a dropped PTP session —
 which the A6000 does when idle — is recovered transparently and does not surface
-as an error. Unknown profile → **400**. Unrecoverable camera error → **503**.
+as an error.
+
+| Status | Meaning |
+|---|---|
+| **400** | unknown profile |
+| **409** | the frame is byte-identical to the previous one — the body served a frame from its own volatile buffer. Retrying will return the same one; the fix is a USB re-enumeration, **not** a power cycle |
+| **412** | the focal length no longer matches the calibrated one. The camera is working perfectly and is pointed at the wrong magnification |
+| **507** | staging cannot hold the frames. No shutter actuation was spent |
+| **503** | unrecoverable camera error |
 
 ### `GET /files/{file_id}`
 
-Returns the bytes. `file_id` may contain slashes (it is a camera path on the
-gphoto2 backend). **404** if unknown.
+Returns the bytes. **404** if unknown — released, evicted, or from a run whose
+staging was lost.
+
+**Reading does not release.** A GET that consumed would make a retried request
+after a network timeout destroy a page silently, and would put the only copy of
+a frame at the mercy of the flakiest part of the system.
+
+### `DELETE /files/{file_id}`
+
+Claim a frame: *"I have this, you may forget it."*
+
+```json
+{"file_id": "cam0/000017/0/capt_DSC00001.ARW", "existed": true, "staged_frames": 3}
+```
+
+**Always 200, idempotent.** An orchestrator whose release timed out will retry
+it; answering 404 the second time invites the one reflex that loses data —
+treating a frame already safely taken as one worth re-fetching. `existed`
+carries the distinction for anyone who needs it.
+
+This is the route whose absence left `release_cache()` in the backend with no
+caller, and staging filling at ~320 frames with nothing able to free it. The
+design follows libgphoto2's own: `--capture-image-and-download` deletes by
+default, and on Sony that delete never reaches the camera — it is a host-side
+eviction — with a bounded LRU behind it.
+
+### `DELETE /files`
+
+Drop everything. For the end of a run, or a clean start.
+
+### `GET /staged`
+
+```json
+{
+  "camera_id": "cam0",
+  "file_ids": ["cam0/000017/0/capt_DSC00001.ARW"],
+  "count": 1, "cap": 240, "evicted": 0, "recovered": 0,
+  "staging_free_mb": 7945, "staging_volatile": false
+}
+```
+
+The orchestrator's recovery path after **its own** restart: ask what survived
+rather than assume. `evicted` is non-zero only when the cap has dropped frames,
+which means something captured without claiming.
+
+### `POST /optics`
+
+```json
+{"expected_focal_length_mm": 30.0}
+```
+
+Record the focal length the rig was calibrated at. Set it once, after the zoom
+is taped. Every captured frame's EXIF is then checked against it, and a power
+cycle that resets the E PZ 16-50 to 16 mm stops the run on the next frame
+instead of quietly producing several hundred pages at the wrong magnification.
+
+Zero disables the check, and is the right default for an uncalibrated rig: an
+alarm nobody has calibrated for gets ignored, including on the day it is right.
 
 ### `GET /healthz`
 

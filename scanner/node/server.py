@@ -27,7 +27,14 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from .backends.base import CameraBackend, CameraError, CameraSettings, StagingFull
+from .backends.base import (
+    CameraBackend,
+    CameraError,
+    CameraSettings,
+    DuplicateFrame,
+    OpticalStateChanged,
+    StagingFull,
+)
 
 def _default_camera_id() -> str:
     """Role from hostname, so both Pis can run the identical SD image."""
@@ -72,6 +79,15 @@ class ConfigRequest(BaseModel):
     aperture: str | None = None
     capture_target: str | None = None
     image_format: str | None = None
+
+
+class OpticsRequest(BaseModel):
+    #: The focal length the rig was calibrated at, in mm.  Zero disables
+    #: the check.  Module scope, not nested in create_app: `from __future__
+    #: import annotations` turns every annotation into a string, and FastAPI
+    #: resolves those against the module namespace -- a model defined inside
+    #: the factory is invisible there and the route silently degrades to 422.
+    expected_focal_length_mm: float
 
 
 class CaptureRequest(BaseModel):
@@ -227,11 +243,22 @@ def create_app(camera: CameraBackend | None = None) -> FastAPI:
         )
 
         cam = cam_of(request)
+        # A metering frame is scaffolding, not a page.  Left staged, every
+        # /meter and /focus call quietly consumed 24.5 MB of the same
+        # staging area the run depends on -- and since they all pass
+        # seq=0, they were indistinguishable from a real capture of the
+        # first spread.  Release it in `finally`: the frame is worthless
+        # whether the metering succeeded or threw.
         try:
             files = cam.capture_with_retry(0, 1)
+        except CameraError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        try:
             data = cam.read_file(files[0].file_id)
         except CameraError as e:
             raise HTTPException(status_code=503, detail=str(e)) from e
+        finally:
+            cam.release_file(files[0].file_id)
 
         reading = read_frame(data)
         source = "exif"
@@ -302,9 +329,15 @@ def create_app(camera: CameraBackend | None = None) -> FastAPI:
         cam = cam_of(request)
         try:
             files = cam.capture_with_retry(0, 1)
+        except CameraError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        try:
             data = cam.read_file(files[0].file_id)
         except CameraError as e:
             raise HTTPException(status_code=503, detail=str(e)) from e
+        finally:
+            # Scaffolding, like /meter's frame.  See the note there.
+            cam.release_file(files[0].file_id)
 
         img = cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
         if img is None:
@@ -343,6 +376,18 @@ def create_app(camera: CameraBackend | None = None) -> FastAPI:
             # the operator back to the camera, which is the wrong place.
             # Must precede the CameraError arm -- StagingFull is a subclass.
             raise HTTPException(status_code=507, detail=str(e)) from e
+        except OpticalStateChanged as e:
+            # 412: the precondition the whole run rests on -- the rig being
+            # in the state it was calibrated in -- is no longer true.  Not
+            # 503: the camera is working perfectly, which is exactly the
+            # problem.
+            raise HTTPException(status_code=412, detail=str(e)) from e
+        except DuplicateFrame as e:
+            # 409: the capture completed and did not produce a new image.
+            # Retrying without a USB re-enumeration will return the same
+            # stale frame, so the detail says so rather than leaving the
+            # orchestrator to hammer it.
+            raise HTTPException(status_code=409, detail=str(e)) from e
         except CameraError as e:
             raise HTTPException(status_code=503, detail=str(e)) from e
         return {
@@ -363,6 +408,79 @@ def create_app(camera: CameraBackend | None = None) -> FastAPI:
             raise HTTPException(status_code=503, detail=str(e)) from e
         ctype = "image/png" if cam.status().backend == "mock" else "image/x-sony-arw"
         return Response(content=data, media_type=ctype)
+
+    @api.delete("/files/{file_id:path}")
+    def release_file(request: Request, file_id: str):
+        """
+        Claim a frame: *"I have this, you may forget it."*
+
+        The route that was missing, and the reason staging filled at ~320
+        frames with nothing able to free it.  `release_cache()` has existed
+        since the first node, unreferenced, because there was no way for
+        the orchestrator to say this.
+
+        **Idempotent, and 200 either way.**  An orchestrator that retries
+        after a network timeout must not be told it did something wrong,
+        and a 404 here would invite exactly the wrong reflex -- treating a
+        successful release whose response was lost as a missing frame worth
+        re-fetching.  `existed` carries the distinction for anyone who
+        actually needs it.
+        """
+        cam = cam_of(request)
+        existed = cam.release_file(file_id)
+        return {
+            "file_id": file_id,
+            "existed": existed,
+            "staged_frames": len(cam.staged_frames()),
+        }
+
+    @api.delete("/files")
+    def release_all(request: Request):
+        """Drop every staged frame.  For the end of a run, or a clean start."""
+        cam = cam_of(request)
+        released = cam.release_all()
+        return {"released": released, "staged_frames": len(cam.staged_frames())}
+
+    @api.get("/staged")
+    def staged(request: Request):
+        """
+        Which frames the node is still holding, oldest first.
+
+        The orchestrator's recovery path after its own restart: it can ask
+        what survived rather than assume, and claim or drop accordingly.
+        """
+        cam = cam_of(request)
+        st = cam.status()
+        return {
+            "camera_id": cam.camera_id,
+            "file_ids": cam.staged_frames(),
+            "count": st.staged_frames,
+            "cap": cam.MAX_STAGED_FRAMES,
+            "evicted": st.frames_evicted,
+            "recovered": st.frames_recovered,
+            "staging_free_mb": st.staging_free_mb,
+            "staging_volatile": st.staging_volatile,
+        }
+
+    @api.post("/optics")
+    def set_optics(request: Request, req: OpticsRequest):
+        """
+        Record the focal length the rig was calibrated at.
+
+        Set once, after the zoom is taped and the calibration is done.
+        From then on every captured frame's EXIF is checked against it, and
+        a power cycle that resets the E PZ 16-50 to 16 mm stops the run on
+        the next frame instead of quietly producing several hundred pages
+        at the wrong magnification.
+
+        Zero disables the check, which is the right default for a rig that
+        has not been calibrated yet -- an alarm nobody has calibrated for
+        is just noise.
+        """
+        cam = cam_of(request)
+        cam.expected_focal_length_mm = float(req.expected_focal_length_mm)
+        cam.optical_alarm = ""
+        return asdict(cam.status())
 
     @api.get("/healthz")
     def healthz():

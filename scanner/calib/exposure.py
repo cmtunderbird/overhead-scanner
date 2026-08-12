@@ -334,6 +334,11 @@ _EXIF_IFD = 0x8769
 _TAG_EXPOSURE_TIME = 0x829A
 _TAG_FNUMBER = 0x829D
 _TAG_ISO = 0x8827
+#: Read for a reason that has nothing to do with exposure: it is how the
+#: node notices that a power cycle reset the E PZ 16-50 to 16 mm and
+#: silently voided the DPI and distortion calibration.  Four bytes on a
+#: file already being parsed.  See `OpticalStateChanged`.
+_TAG_FOCAL_LENGTH = 0x920A
 
 _TYPE_SIZES = {1: 1, 2: 1, 3: 2, 4: 4, 5: 8, 7: 1, 9: 4, 10: 8}
 
@@ -343,8 +348,12 @@ def read_exif_exposure(raw: bytes) -> dict[str, float]:
     ISO, f-number and exposure time from a TIFF-based raw, no dependencies.
 
     Deliberately minimal: it walks IFD0, follows the EXIF pointer, and reads
-    three tags. Anything unparseable is omitted rather than guessed, so a
+    four tags. Anything unparseable is omitted rather than guessed, so a
     caller can tell "not present" from "zero".
+
+    Focal length is the odd one out -- nothing here uses it for exposure.
+    It is read because it is the cheapest available detector for a power
+    cycle having reset a taped zoom, which is otherwise entirely silent.
     """
     if len(raw) < 8:
         return {}
@@ -382,10 +391,15 @@ def read_exif_exposure(raw: bytes) -> dict[str, float]:
                     walk(u32(e + 8), depth + 1)
                 elif tag == _TAG_ISO and typ == 3:
                     out["iso"] = float(u16(val_off))
-                elif tag in (_TAG_FNUMBER, _TAG_EXPOSURE_TIME) and typ == 5:
+                elif tag in (_TAG_FNUMBER, _TAG_EXPOSURE_TIME,
+                             _TAG_FOCAL_LENGTH) and typ == 5:
                     num, den = u32(val_off), u32(val_off + 4)
                     if den:
-                        key = "aperture" if tag == _TAG_FNUMBER else "shutter_s"
+                        key = {
+                            _TAG_FNUMBER: "aperture",
+                            _TAG_EXPOSURE_TIME: "shutter_s",
+                            _TAG_FOCAL_LENGTH: "focal_length_mm",
+                        }[tag]
                         out[key] = num / den
 
         walk(u32(4))

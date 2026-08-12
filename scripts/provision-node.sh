@@ -465,6 +465,21 @@ SUBSYSTEM=="usb", ATTR{idVendor}=="054c", ENV{ID_MTP_DEVICE}="", ENV{ID_MEDIA_PL
 #
 # Scoped to Sony so any other camera on the bench behaves normally.
 SUBSYSTEM=="usb", ATTR{idVendor}=="054c", ENV{ID_GPHOTO2}=""
+
+# Never let the kernel suspend the camera.
+#
+# USB autosuspend is the classic killer of long unattended capture runs: the
+# body is idle between pages, the kernel powers the port down, and the next
+# capture meets a device that has to re-enumerate mid-PTP-session.  The
+# symptom is a session death that looks exactly like the ones the A6000
+# produces on its own, which is what makes it expensive -- it hides inside a
+# fault we already expect and tolerate.
+#
+# Per-device via udev rather than usbcore.autosuspend=-1 on the kernel command
+# line, for two reasons: it survives re-enumeration (a cable pull re-applies
+# it, a boot flag does not re-apply to a device that appears later), and it
+# leaves autosuspend working for every other peripheral on the Pi.
+SUBSYSTEM=="usb", ATTR{idVendor}=="054c", TEST=="power/control", ATTR{power/control}="on"
 EOF
 
 if write_if_changed "$UDEV_RULE_PATH" "$UDEV_RULE"; then
@@ -620,9 +635,25 @@ Environment=SCANNER_BACKEND=gphoto2
 Environment=SCANNER_CAMERA_ID=${CAMERA_ID}
 Environment=SCANNER_TILE=${ROLE}
 Environment=PYTHONUNBUFFERED=1
+Environment=SCANNER_STAGING_DIR=/var/lib/scanner/staging
 ExecStart=${VENV_DIR}/bin/python -m uvicorn scanner.node.server:app --host 0.0.0.0 --port ${PORT}
 Restart=always
 RestartSec=5
+
+# Staged frames must outlive the service, and until 2026-08-12 they did
+# not.  The node put them under /tmp, PrivateTmp=yes gives the unit its
+# own tmpfs there, and systemd destroys it whenever the unit stops --
+# which Restart=always then guarantees will happen: a crash, an OOM kill,
+# a `systemctl restart`, a deploy, or a run of camera reconnect failures.
+# Every frame the orchestrator had not yet collected went with it, and the
+# node came back reporting a healthy empty staging area, which is the
+# worst way for a machine to lose data.
+#
+# StateDirectory= creates /var/lib/scanner owned by the service user, on
+# real storage, before ExecStart.  PrivateTmp stays: /tmp being private is
+# still right, it just must not be where the frames live.
+StateDirectory=scanner
+StateDirectoryMode=0750
 
 NoNewPrivileges=yes
 ProtectSystem=full
@@ -735,5 +766,5 @@ Next:
 
 Camera body settings, before the node will capture:
   USB Connection -> PC Remote | Mode dial -> M | Auto Review -> Off
-  Pre-AF -> Off | Focus -> DMF
+  Pre-AF -> Off | Focus -> MF (not DMF) | leave a card in the body
 EOF

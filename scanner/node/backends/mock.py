@@ -184,6 +184,7 @@ class MockCamera(CameraBackend):
                 fid = f"{self.camera_id}-{seq:06d}-{f}-{uuid.uuid4().hex[:6]}"
                 self._files[fid] = data
                 self.frames_captured += 1
+                self.enforce_frame_cap()
                 out.append(
                     CapturedFile(
                         file_id=fid,
@@ -205,6 +206,19 @@ class MockCamera(CameraBackend):
 
     def forget(self, file_id: str) -> None:
         self._files.pop(file_id, None)
+
+    # The mock is only worth having if the orchestrator cannot tell it from
+    # a Sony, and frame claiming is now part of that contract.  A mock that
+    # accepted captures forever while the real node filled and refused
+    # would let exactly the bug this API exists to prevent pass in CI.
+
+    def staged_frames(self) -> list[str]:
+        return list(self._files)
+
+    def release_file(self, file_id: str) -> bool:
+        existed = file_id in self._files
+        self._files.pop(file_id, None)
+        return existed
 
     def preview(self) -> bytes:
         self._require_connection()

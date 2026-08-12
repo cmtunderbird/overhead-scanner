@@ -204,7 +204,21 @@ capture hangs without them:
 | Mode dial | **M** | Sony refuses aperture/shutter over PTP in any other mode |
 | Auto Review | **Off** | Blocks the next command while it shows you the shot |
 | Pre-AF | **Off** | Hunts between frames and moves your focus |
-| Focus | **DMF** | Manual with magnification, which is what you want |
+| Focus | **MF** | Manual. **Not DMF** — see below |
+
+> **Focus must be MF, not DMF.** libgphoto2's `camera_sony_capture()` skips its
+> entire focus-wait loop only when `FocusMode == 1`, which is Manual. DMF is not
+> 1, so it re-enters the wait and costs up to a second a frame — and DMF holds an
+> AF interlock that can refuse the shutter outright, which is recorded in
+> `exposure-and-lighting.md` §3 as a capture that never happened. Advice
+> recommending DMF (BYU's `a6000_ros`, 2018) was written against libgphoto2
+> 2.5.21, where the focus wait ran unconditionally and capped at 1 s, so DMF cost
+> nearly nothing. On a current stack it is a liability.
+>
+> **Leave a card in the body**, permanently. Not for storage — `capturetarget`
+> is absent, nothing is written to it, and in PC Remote the card is not even
+> visible over PTP. It is what makes the body capture reliably at all.
+
 
 Use the camera's **DATA** port, not the charge-only one. Then:
 

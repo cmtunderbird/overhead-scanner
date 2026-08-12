@@ -291,8 +291,15 @@ def test_extract_preview_on_a_file_with_none():
 
 # ---------------------------------------------------------------- EXIF ----
 
-def _tiff_with_exif(iso=100, fnum=(8, 1), etime=(1, 250)) -> bytes:
-    """A minimal little-endian TIFF carrying an EXIF IFD with three tags."""
+def _tiff_with_exif(iso=100, fnum=(8, 1), etime=(1, 250), focal=None) -> bytes:
+    """
+    A minimal little-endian TIFF carrying an EXIF IFD.
+
+    `focal` is a (numerator, denominator) rational, or None to leave the
+    tag out -- which is the case that matters, because a body or a lens
+    that reports no focal length must not be mistaken for one that reports
+    a wrong one.
+    """
     import struct
     header = b"II" + struct.pack("<HI", 42, 8)
 
@@ -301,6 +308,8 @@ def _tiff_with_exif(iso=100, fnum=(8, 1), etime=(1, 250)) -> bytes:
         (0x829D, 5, 1, None, fnum),     # FNumber, rational
         (0x8827, 3, 1, iso, None),      # ISO, short
     ]
+    if focal is not None:
+        exif_entries.append((0x920A, 5, 1, None, focal))  # FocalLength
     ifd0_off = 8
     ifd0 = struct.pack("<H", 1)
     exif_ifd_off = ifd0_off + 2 + 12 + 4
@@ -364,3 +373,25 @@ def test_end_to_end_a_real_looking_metering_frame():
     assert rec.basis == "measured"
     assert rec.shutter_label == "1/60"
     assert rec.iso == 100 and rec.aperture == pytest.approx(8.0)
+
+
+def test_focal_length_is_read_when_present():
+    """
+    Not an exposure value at all.  It is read because it is the only cheap
+    signal that a power cycle has reset a taped zoom -- see
+    `OpticalStateChanged`.
+    """
+    got = read_exif_exposure(_tiff_with_exif(focal=(30, 1)))
+    assert got["focal_length_mm"] == pytest.approx(30.0)
+    assert got["aperture"] == pytest.approx(8.0)
+
+
+def test_focal_length_absent_is_absent_not_zero():
+    """A missing tag must not read as 0 mm, which would look like an alarm."""
+    assert "focal_length_mm" not in read_exif_exposure(_tiff_with_exif())
+
+
+def test_focal_length_survives_a_rational_that_is_not_whole():
+    # The 16-50 reports e.g. 16.5 mm as 165/10.
+    got = read_exif_exposure(_tiff_with_exif(focal=(165, 10)))
+    assert got["focal_length_mm"] == pytest.approx(16.5)

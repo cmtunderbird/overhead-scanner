@@ -458,22 +458,65 @@ else
         fi
 
         # Staging headroom has to come from the node, not from df: the
-        # service runs with PrivateTmp=yes, so its staging area is a tmpfs
-        # inside a mount namespace this shell cannot see. `df /` on the host
-        # will cheerfully report 100 GB free while the node has none left.
+        # service still runs with PrivateTmp=yes, and even now that frames
+        # live under StateDirectory= the shell cannot see the service's
+        # mount namespace. `df /` on the host will cheerfully report 100 GB
+        # free while the node has none left.
         S_STAGE="$(get_field staging_free_mb)"
         if [[ -z "$S_STAGE" || "$S_STAGE" == "-1" ]]; then
             skip "staging headroom (backend does not stage frames to disk)"
         elif [[ "$S_STAGE" -lt 300 ]]; then
             fail "/status staging_free_mb=$S_STAGE -- under the ~290 MB a 'max' profile
-        needs. Captures will start refusing with 507. Frames are staged in RAM
-        and nothing frees them automatically: the orchestrator must collect
-        them via /files."
+        needs. Captures will start refusing with 507. The orchestrator claims
+        frames with DELETE /files/<id>; GET alone does not free them."
         elif [[ "$S_STAGE" -lt 1000 ]]; then
             warn "/status staging_free_mb=$S_STAGE -- room for roughly $((S_STAGE / 25))
-        more frames. Collect the staged frames before starting a long run."
+        more frames. Claim the staged frames before starting a long run."
         else
             pass "/status staging_free_mb=$S_STAGE (~$((S_STAGE / 25)) frames of headroom)"
+        fi
+
+        # Frames must outlive the service. Until 2026-08-12 they did not:
+        # staging was under /tmp, PrivateTmp gave the unit its own tmpfs
+        # there, and Restart=always guaranteed something would eventually
+        # destroy it -- a crash, an OOM kill, a deploy, a `systemctl
+        # restart`, or a run of camera reconnect failures. The node then
+        # came back reporting a healthy, empty staging area, which is the
+        # worst way for a machine to lose data.
+        S_VOL="$(get_field staging_volatile)"
+        if [[ "$S_VOL" == "true" ]]; then
+            fail "/status staging_volatile=true -- staged frames will NOT survive a
+        restart of this service, and Restart=always means there will be one.
+        Expected SCANNER_STAGING_DIR=/var/lib/scanner/staging via StateDirectory=;
+        re-run provision-node.sh, then: systemctl show scanner-node -p StateDirectory"
+        elif [[ -n "$S_VOL" ]]; then
+            pass "/status staging_volatile=false (frames survive a service restart)"
+        else
+            skip "staging persistence (field absent -- node predates PR #9)"
+        fi
+
+        # Non-zero is not a fault, it is a receipt: frames were found from a
+        # previous run of this process and adopted rather than leaked.
+        S_REC="$(get_field frames_recovered)"
+        if [[ -n "$S_REC" && "$S_REC" != "0" ]]; then
+            warn "/status frames_recovered=$S_REC -- this node restarted while the
+        orchestrator still had frames outstanding. They survived and are listed
+        by GET /staged; claim or drop them before starting a new run."
+        fi
+
+        # A cap that evicts silently reads exactly like a cap never reached.
+        S_EVICT="$(get_field frames_evicted)"
+        if [[ -n "$S_EVICT" && "$S_EVICT" != "0" ]]; then
+            fail "/status frames_evicted=$S_EVICT -- the staging cap has DROPPED that
+        many frames. Something captured without claiming: either the orchestrator
+        died mid-run, or it is calling GET /files and never DELETE."
+        fi
+
+        # The lens moved since calibration. Capture goes on working, which
+        # is exactly why this needs saying out loud.
+        S_OPT="$(get_field optical_alarm)"
+        if [[ -n "$S_OPT" && "$S_OPT" != "null" ]]; then
+            fail "/status optical_alarm: $S_OPT"
         fi
         detail "$STATUS_JSON"
     else
