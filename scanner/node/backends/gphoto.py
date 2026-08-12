@@ -823,14 +823,31 @@ class GPhotoCamera(CameraBackend):
             raise CameraError(f"{self.camera_id}: capture failed: {e}") from e
 
         camera_path = f"{path.folder.rstrip('/')}/{path.name}"
-        # The camera-side name is NOT a usable identity.  With
-        # session_per_capture the body starts each session at
-        # `capt_DSC00001.ARW`, so every frame of a run arrives with the
-        # same name -- and keying the cache on it meant each new frame
-        # evicted the previous one from the map while leaving its bytes on
-        # disk, unreferenced and unreleasable.  `/files/<id>` then always
-        # served the newest frame whatever was asked for.  The id is the
-        # node's to mint, and the sequence is the thing that is unique.
+        # The camera-side name is not a safe identity, so the node mints
+        # its own.
+        #
+        # Measured both ways, and the second measurement corrected the
+        # first.  `first-light-measurements.md` recorded
+        # `/capt_DSC00001.ARW`, and this comment used to reason from that
+        # single observation that the body restarts its numbering every
+        # session -- so every frame of a run would arrive with the same
+        # name.  Ten consecutive captures on scanner-node-0, 2026-08-12,
+        # say otherwise: `capt_DSC00794.ARW` through `capt_DSC00803.ARW`,
+        # incrementing across ten separate PTP sessions.  DSC00001 was
+        # simply the first frame the body had ever taken.
+        #
+        # So the collision is latent rather than live -- which is worth
+        # saying plainly, because a fix justified by a bug that is not
+        # happening invites someone to revert it.  What makes the
+        # camera-side name unsafe is that its uniqueness is a *body
+        # setting*, not a property: Sony's File Number can be set to
+        # Reset instead of Series, a new or formatted card restarts the
+        # counter, and it wraps at 9999.  Any of those would silently
+        # collapse two frames onto one id, and the failure would be a
+        # book with a page served twice.
+        #
+        # A node-minted id does not depend on the camera behaving.  The
+        # sequence is ours and is unique by construction.
         fid = f"{self.camera_id}/{seq:06d}/{frame_index}/{path.name}"
         try:
             info = cam.file_get_info(path.folder, path.name)

@@ -86,13 +86,18 @@ def test_reading_a_frame_does_not_release_it(staged):
     assert dev.staged_frames() == [files[0].file_id]
 
 
-def test_file_ids_are_unique_even_though_the_camera_name_is_not(staged):
+def test_file_ids_are_unique_even_when_the_camera_name_repeats(staged):
     """
-    With `session_per_capture` the body restarts its own numbering every
-    session, so every frame of a run arrives as `capt_DSC00001.ARW`.
-    Keying on that meant each new frame evicted the previous one from the
-    map while leaving its bytes on disk, unreferenced and unreleasable --
-    and `/files/<id>` served the newest frame whatever was asked for.
+    The node mints its own id rather than trusting the camera's filename.
+
+    On real hardware the body's counter *does* increment across sessions
+    (measured 2026-08-12: capt_DSC00794 through capt_DSC00803 over ten
+    separate PTP sessions), so this is a latent collision, not a live one.
+    It becomes live whenever the body's File Number is set to Reset rather
+    than Series, on a new or formatted card, or when the counter wraps at
+    9999 -- and the failure would be a book with one page served twice.
+
+    The fake holds its name constant precisely to pin that case down.
     """
     dev, fake, _ = staged
     a = dev.capture(1)[0]

@@ -169,9 +169,12 @@ holds the per-region peak and shows the current score against it — see
 `seq` is **echoed, never invented**. Pairing depends on it.
 
 `file_id` is minted by the node; `path` is where the frame sat on the camera.
-They are separate because **the camera-side name is not unique**: with
-`session_per_capture` the body restarts its own numbering every session, so
-every frame of a run arrives as `capt_DSC00001.ARW`.
+They are separate because **the camera-side name's uniqueness is a body setting,
+not a property**. The counter does increment across sessions in practice
+(measured: `capt_DSC00794` → `capt_DSC00803` over ten sessions), but Sony's File
+Number can be set to Reset rather than Series, a new or formatted card restarts
+it, and it wraps at 9999. A node-minted id does not depend on the camera
+behaving.
 
 Capture retries once through `capture_with_retry`, so a dropped PTP session —
 which the A6000 does when idle — is recovered transparently and does not surface
