@@ -227,6 +227,56 @@ def _resolve_staging_root() -> tuple[pathlib.Path, bool]:
     return pathlib.Path(tempfile.mkdtemp(prefix="scanner-staging-")), True
 
 
+#: Shutter values that are a mode, not an exposure.
+_NON_EXPOSURE_SHUTTERS = {"bulb", "auto", "unknown", "time", "--", ""}
+
+
+def plausible_setting(name: str, value) -> bool:
+    """
+    Is this a setting, or is it the body saying "not ready"?
+
+    A Sony that has not finished waking answers the config tree with
+    placeholders rather than refusing: **ISO 0, f-number 0, shutter
+    "Bulb"**.  None of those is an exposure any camera can be at, and each
+    one poisons a different consumer:
+
+    * `parse_shutter("Bulb")` raises, so /meter's fallback path dies,
+    * `ev100()` refuses a zero aperture for the same reason arithmetic
+      does,
+    * and /status goes on describing a camera that cannot exist.
+
+    Measured on scanner-node-0, 2026-08-12.  The body was still coming up
+    when the node connected; `_adopt_body_settings()` read
+    `iso=0, shutterspeed=Bulb, f-number=0` and wrote all three down as
+    fact.  /status served that exposure until a reconnect was forced.
+    GET /config, added in PR #7, is what made it visible:
+
+        read_from_body: {"iso": "200", "shutterspeed": "1/125", "f-number": "8"}
+        node_believes:  {"iso": "0",   "shutterspeed": "Bulb",  "f-number": "0"}
+
+    The body was correct the whole time.  Only the node was wrong, and it
+    was wrong in the direction that looks like data.
+    """
+    text = str(value).strip().lower()
+    if not text:
+        return False
+    if name == "shutterspeed":
+        if text in _NON_EXPOSURE_SHUTTERS:
+            return False
+        try:
+            return parse_shutter(value) > 0
+        except (ValueError, ZeroDivisionError, TypeError):
+            return False
+    try:
+        if name == "iso":
+            return float(text) > 0
+        if name == "f-number":
+            return _aperture_number(value) > 0
+    except (ValueError, TypeError):
+        return False
+    return True
+
+
 def gphoto2_available() -> bool:
     try:
         import gphoto2  # noqa: F401
@@ -243,6 +293,11 @@ class GPhotoCamera(CameraBackend):
     #: Settings this backend will try to apply, in order.  `expprogram` is
     #: deliberately absent: it is read-only on Sony bodies.
     SETTING_KEYS = ("iso", "shutterspeed", "f-number")
+
+    #: Pause before re-reading a body that answered with placeholders.
+    #: One second: long enough for a waking ILCE-6000 to settle, short
+    #: enough that connect() does not feel hung.
+    ADOPT_RETRY_S = 1.0
 
     def __init__(self, camera_id: str = "cam0", tile_index: int = 0,
                  *, keep_on_camera: bool | None = None,
@@ -336,12 +391,36 @@ class GPhotoCamera(CameraBackend):
         from fiction.
         """
         read = self.read_settings()
-        if not read:
+        usable = {k: v for k, v in read.items() if plausible_setting(k, v)}
+
+        # One retry, because the cause is a race rather than a fault: the
+        # body answers the config tree before it has finished waking, and
+        # is correct a moment later.  Retrying is cheaper than carrying a
+        # wrong exposure for the life of the session, and it is the
+        # difference between self-healing and needing a human to notice.
+        if read and not usable:
+            time.sleep(self.ADOPT_RETRY_S)
+            read = self.read_settings()
+            usable = {k: v for k, v in read.items() if plausible_setting(k, v)}
+
+        rejected = sorted(set(read) - set(usable))
+        if rejected:
+            note = (
+                f"{self.camera_id}: the body reported "
+                + ", ".join(f"{k}={read[k]!r}" for k in rejected)
+                + " at connect -- placeholders, not settings, from a body that "
+                "had not finished waking.  They were NOT adopted; /status keeps "
+                "the previous values.  GET /config to compare, POST /connect to "
+                "re-read."
+            )
+            self.last_error = f"{self.last_error}; {note}" if self.last_error else note
+
+        if not usable:
             return
         self.settings = self.settings.merged(
-            iso=int(read["iso"]) if "iso" in read else None,
-            shutter=read.get("shutterspeed"),
-            aperture=read.get("f-number"),
+            iso=int(float(usable["iso"])) if "iso" in usable else None,
+            shutter=usable.get("shutterspeed"),
+            aperture=usable.get("f-number"),
         )
 
     def _open_session(self) -> None:

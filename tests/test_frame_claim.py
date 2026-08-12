@@ -353,3 +353,142 @@ def test_a_frame_with_no_focal_length_is_not_an_alarm(staged, monkeypatch):
     monkeypatch.setattr(dev, "_download", lambda f, n: _tiff_with_exif())
     dev.capture(1)
     assert dev.status().optical_alarm == ""
+
+
+# ------------------------------------------------- adopting a waking body --
+#
+# Caught on scanner-node-0, 2026-08-12.  The body was still coming up when
+# the node connected and answered its config tree with placeholders --
+# iso=0, shutterspeed=Bulb, f-number=0.  All three were adopted as fact and
+# served from /status until a reconnect was forced.  GET /config, which
+# exists precisely to compare belief against the hardware, is what showed
+# it: read_from_body said 200 / 1/125 / f8 while node_believes said
+# 0 / Bulb / 0.  The camera was right the whole time.
+
+from scanner.node.backends.gphoto import plausible_setting
+
+
+@pytest.mark.parametrize("name,value", [
+    ("iso", "0"), ("iso", "-100"), ("iso", ""), ("iso", "auto"),
+    ("f-number", "0"), ("f-number", "f/0"), ("f-number", ""),
+    ("shutterspeed", "Bulb"), ("shutterspeed", "bulb"),
+    ("shutterspeed", "Auto"), ("shutterspeed", "0"), ("shutterspeed", ""),
+])
+def test_placeholders_are_not_settings(name, value):
+    assert plausible_setting(name, value) is False
+
+
+@pytest.mark.parametrize("name,value", [
+    ("iso", "200"), ("iso", "100"), ("iso", "6400"),
+    ("f-number", "8"), ("f-number", "f/5.6"), ("f-number", "1.4"),
+    ("shutterspeed", "1/125"), ("shutterspeed", "5/10"),
+    ("shutterspeed", "2"), ("shutterspeed", "30"),
+])
+def test_real_settings_pass(name, value):
+    assert plausible_setting(name, value) is True
+
+
+def _widget(dev, name):
+    return dev._camera.cfg.get_child_by_name(name)
+
+
+def test_a_waking_body_is_not_believed(monkeypatch, tmp_path):
+    """
+    The whole failure: placeholders adopted as an exposure, and /status
+    then describing a camera that cannot exist.
+    """
+    from scanner.node.backends.gphoto import GPhotoCamera
+
+    monkeypatch.setenv("SCANNER_STAGING_DIR", str(tmp_path / "staging"))
+    install_fake(monkeypatch, capturetarget=False)
+
+    dev = GPhotoCamera("cam0", 0)
+    dev.ADOPT_RETRY_S = 0.0
+    monkeypatch.setattr(
+        GPhotoCamera, "read_settings",
+        lambda self: {"iso": "0", "shutterspeed": "Bulb", "f-number": "0"},
+    )
+    dev.connect()
+
+    # The constructor defaults survive; the placeholders do not.
+    assert dev.settings.iso == 200
+    assert dev.settings.shutter == "1/125"
+    assert dev.settings.aperture == "8.0"
+    assert "had not finished waking" in dev.last_error
+
+
+def test_the_retry_is_what_makes_it_self_healing(monkeypatch, tmp_path):
+    """
+    The cause is a race, not a fault -- the body is correct a moment
+    later.  Retrying once is the difference between recovering on its own
+    and needing a human to notice.
+    """
+    from scanner.node.backends.gphoto import GPhotoCamera
+
+    monkeypatch.setenv("SCANNER_STAGING_DIR", str(tmp_path / "staging"))
+    install_fake(monkeypatch, capturetarget=False)
+
+    calls = {"n": 0}
+
+    def waking(self):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return {"iso": "0", "shutterspeed": "Bulb", "f-number": "0"}
+        return {"iso": "200", "shutterspeed": "1/125", "f-number": "8"}
+
+    monkeypatch.setattr(GPhotoCamera, "read_settings", waking)
+    dev = GPhotoCamera("cam0", 0)
+    dev.ADOPT_RETRY_S = 0.0
+    dev.connect()
+
+    assert calls["n"] == 2
+    assert dev.settings.iso == 200
+    assert dev.settings.shutter == "1/125"
+    assert dev.settings.aperture == "8"
+
+
+def test_a_partly_ready_body_contributes_what_it_has(monkeypatch, tmp_path):
+    """
+    Refusing the whole read because one field is a placeholder would throw
+    away two good values to punish one bad one.
+    """
+    from scanner.node.backends.gphoto import GPhotoCamera
+
+    monkeypatch.setenv("SCANNER_STAGING_DIR", str(tmp_path / "staging"))
+    install_fake(monkeypatch, capturetarget=False)
+
+    monkeypatch.setattr(
+        GPhotoCamera, "read_settings",
+        lambda self: {"iso": "400", "shutterspeed": "Bulb", "f-number": "5.6"},
+    )
+    dev = GPhotoCamera("cam0", 0)
+    dev.ADOPT_RETRY_S = 0.0
+    dev.connect()
+
+    assert dev.settings.iso == 400
+    assert dev.settings.aperture == "5.6"
+    assert dev.settings.shutter == "1/125"       # kept, not overwritten
+    assert "shutterspeed" in dev.last_error
+
+
+def test_the_capturetarget_note_is_not_clobbered(monkeypatch, tmp_path):
+    """
+    _resolve_capture_target() runs first and leaves a real note in
+    last_error.  Overwriting it would trade one honest message for
+    another instead of reporting both.
+    """
+    from scanner.node.backends.gphoto import GPhotoCamera
+
+    monkeypatch.setenv("SCANNER_STAGING_DIR", str(tmp_path / "staging"))
+    install_fake(monkeypatch, capturetarget=False)
+
+    monkeypatch.setattr(
+        GPhotoCamera, "read_settings",
+        lambda self: {"iso": "0", "shutterspeed": "Bulb", "f-number": "0"},
+    )
+    dev = GPhotoCamera("cam0", 0)
+    dev.ADOPT_RETRY_S = 0.0
+    dev.connect()
+
+    assert "capturetarget" in dev.last_error
+    assert "had not finished waking" in dev.last_error
