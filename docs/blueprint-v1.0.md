@@ -118,7 +118,7 @@ WS   /events          progress, errors
 - Auto Review → **Off**
 - Mode dial → **M**
 - **Pre-AF → Off**
-- Focus → **DMF**
+- Focus → **MF** (not DMF: DMF re-enters libgphoto2's focus wait and its AF interlock can refuse the shutter)
 - `capturetarget` → **card**, set explicitly
 
 **Three gotchas, each worth an evening if missed:**

@@ -205,3 +205,140 @@ def test_get_config_on_a_backend_that_cannot_be_asked():
         assert d["disagreements"] == []      # nothing read, so nothing to compare
     finally:
         server.set_camera(None)
+
+
+# ------------------------------------------------------- claiming frames ----
+#
+# The route that did not exist until 2026-08-12, and whose absence was the
+# reason `release_cache()` sat in the backend with no caller: there was no
+# way for the orchestrator to say "I have this frame, you may forget it".
+
+def test_a_frame_can_be_claimed(client):
+    c, _cam = client
+    fid = c.post("/capture", json={"seq": 4}).json()["files"][0]["file_id"]
+    assert c.get(f"/files/{fid}").status_code == 200
+
+    r = c.delete(f"/files/{fid}")
+    assert r.status_code == 200
+    assert r.json()["existed"] is True
+    assert r.json()["staged_frames"] == 0
+    assert c.get(f"/files/{fid}").status_code == 404
+
+
+def test_claiming_twice_is_not_an_error(client):
+    """
+    A release whose response was lost will be retried.  Answering 404 the
+    second time invites the orchestrator to treat a frame it has already
+    safely taken as one worth re-fetching.
+    """
+    c, _cam = client
+    fid = c.post("/capture", json={"seq": 5}).json()["files"][0]["file_id"]
+    assert c.delete(f"/files/{fid}").json()["existed"] is True
+    again = c.delete(f"/files/{fid}")
+    assert again.status_code == 200
+    assert again.json()["existed"] is False
+
+
+def test_reading_a_frame_does_not_claim_it(client):
+    c, _cam = client
+    fid = c.post("/capture", json={"seq": 6}).json()["files"][0]["file_id"]
+    c.get(f"/files/{fid}")
+    c.get(f"/files/{fid}")
+    assert c.get("/staged").json()["count"] >= 1
+
+
+def test_staged_lists_what_the_node_still_holds(client):
+    c, _cam = client
+    c.delete("/files")
+    ids = [c.post("/capture", json={"seq": s}).json()["files"][0]["file_id"]
+           for s in (7, 8)]
+    body = c.get("/staged").json()
+    assert body["count"] == 2
+    assert set(ids) <= set(body["file_ids"])
+    assert body["cap"] > 0
+
+
+def test_release_all_empties_the_node(client):
+    c, _cam = client
+    c.post("/capture", json={"seq": 9})
+    r = c.delete("/files")
+    assert r.status_code == 200
+    assert r.json()["staged_frames"] == 0
+    assert c.get("/staged").json()["count"] == 0
+
+
+def test_status_publishes_the_staged_count(client):
+    c, _cam = client
+    c.delete("/files")
+    c.post("/capture", json={"seq": 10})
+    st = c.get("/status").json()
+    assert st["staged_frames"] == 1
+    assert st["frames_evicted"] == 0
+    assert "staging_volatile" in st
+
+
+def test_the_calibrated_focal_length_can_be_recorded(client):
+    """
+    Set once, after the zoom is taped.  Zero means "not calibrated", which
+    is the only honest default -- an alarm nobody has calibrated for gets
+    ignored, including on the day it is right.
+    """
+    c, _cam = client
+    assert c.get("/status").json()["expected_focal_length_mm"] == 0.0
+    r = c.post("/optics", json={"expected_focal_length_mm": 30.0})
+    assert r.status_code == 200
+    assert r.json()["expected_focal_length_mm"] == 30.0
+    assert c.get("/status").json()["expected_focal_length_mm"] == 30.0
+
+
+# ---------------------------------------------------------- recovery ----
+#
+# On 2026-08-12 the only way to clear a genuinely wedged A6000 was to SSH
+# into the node and run a Python one-liner, because the tier that fixes it
+# had no route and no caller.
+
+def test_recover_is_reachable_over_http(client):
+    c, cam = client
+    r = c.post("/recover")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["recovered"] is True
+    assert "status" in body
+    assert body["status"]["camera_id"] == cam.camera_id
+
+
+def test_recover_reports_a_failure_rather_than_pretending(client, monkeypatch):
+    from scanner.node.backends.base import CameraDisconnected
+
+    c, cam = client
+    monkeypatch.setattr(
+        cam, "recover",
+        lambda: (_ for _ in ()).throw(
+            CameraDisconnected("cam0: pull the cable and put it back")),
+    )
+    r = c.post("/recover")
+    assert r.status_code == 503
+    assert "pull the cable" in r.json()["detail"].lower()
+
+
+def test_preview_survives_one_dropped_session(client, monkeypatch):
+    """
+    /preview had no recovery at all until now, while /capture had it from
+    the start.  The asymmetry was the bug.
+    """
+    from scanner.node.backends.base import CameraDisconnected
+
+    c, cam = client
+    calls = {"n": 0}
+    real = cam.preview
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise CameraDisconnected("cam0: session lost during preview")
+        return real()
+
+    monkeypatch.setattr(cam, "preview", flaky)
+    r = c.get("/preview")
+    assert r.status_code == 200
+    assert calls["n"] == 2          # it retried rather than giving up

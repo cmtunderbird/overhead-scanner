@@ -83,6 +83,13 @@ def _tree(*, capturetarget: bool):
         Widget("shutterspeed", "1/250"),
         Widget("f-number", "f/5.6"),
         Widget("expprogram", "M", readonly=True),
+        # Both default to what the real body was found in on 2026-08-12.
+        # DMF is not a neutral starting point -- it is the state that made
+        # the ILCE-6000 refuse the shutter for an entire evening -- so the
+        # fake starts there deliberately, and a connect that does not
+        # correct it fails the tests.
+        Widget("focusmode", "DMF"),
+        Widget("capturemode", "Continuous Low Speed"),
     ])
     status = Widget("status", children=[Widget("cameramodel", "ILCE-6000")])
     kids = [imgsettings, capturesettings, status]
@@ -100,6 +107,14 @@ class FakeCameraFile:
         return memoryview(self._d)
 
 
+#: Every real frame differs from every other -- sensor noise alone sees to
+#: that, which is exactly why a byte-identical repeat is evidence of the
+#: stale-buffer hazard rather than a coincidence.  A fake that returns a
+#: constant would make the duplicate guard fire on every second capture in
+#: CI, so the fake models the noise.  `stuck` turns it off to reproduce the
+#: hazard on purpose.
+
+
 class FakePath:
     folder = "/"
     name = "capt_DSC00001.ARW"
@@ -112,6 +127,10 @@ class FakeCamera:
         self.on_camera: list[str] = []
         self.inits = 0
         self.session_shots = 0
+        self.downloads = 0
+        #: When True every download returns identical bytes, which is what
+        #: a body with a frame stuck in RAM does.
+        self.stuck = False
         #: Reproduce the measured ILCE-6000 behaviour: a session manages
         #: this many captures, then every further one fails.
         self.captures_per_session = None
@@ -142,7 +161,11 @@ class FakeCamera:
         return types.SimpleNamespace(file=types.SimpleNamespace(size=24_000_000))
 
     def file_get(self, _folder, _name, _type):
-        return FakeCameraFile()
+        if self.stuck:
+            # The body serving a frame left in its volatile buffer.
+            return FakeCameraFile(b"x" * 32 + b"STALE")
+        self.downloads += 1
+        return FakeCameraFile(b"x" * 32 + b"%04d" % self.downloads)
 
     def file_delete(self, _folder, name):
         self.deleted.append(name)
@@ -241,7 +264,7 @@ def test_frames_are_deleted_when_the_body_has_no_card(a6000):
     assert cam.deleted == ["capt_DSC00001.ARW"]
     assert cam.on_camera == [], "frame must not be left on a body with no card"
     # And it is still readable afterwards, from the local cache.
-    assert dev.read_file(files[0].file_id) == b"x" * 32
+    assert dev.read_file(files[0].file_id).startswith(b"x" * 32)
 
 
 def test_frames_are_kept_when_the_body_does_have_a_card(with_card):

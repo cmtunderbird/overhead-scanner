@@ -37,7 +37,18 @@ Four things will cost you an evening each if you skip them:
 
    The session also drops when idle.  `capture_with_retry` in the base
    class recovers -- but only for codes `_session_lost_codes()` reports,
-   which is why `GP_ERROR` (-1) had to be added to it.
+   which is why `GP_ERROR` (-1) and later `GP_ERROR_TIMEOUT` (-10) both
+   had to be added to it.
+
+   And a dropped session is not the worst case.  After ~7 hours idle on
+   2026-08-12 the link *wedged*: every path returned -10, a full
+   `systemctl restart` changed nothing, and the `gphoto2` CLI failed
+   identically -- which exonerated this code and located the fault in the
+   device.  A reopen cannot help, because `cam.init()` is itself what
+   times out.  Only `usb_reset()` cleared it.  Hence the tiers in
+   `recover()`, and hence every recovery path routing through that one
+   method: the previous arrangement called `reconnect()` directly, so the
+   tier that actually works had no caller at all.
 
 3. **`capturetarget` does not exist on every body.**  On the ILCE-6000 it
    is absent from the PTP config tree entirely -- not defaulted, absent.
@@ -61,18 +72,59 @@ Four things will cost you an evening each if you skip them:
    setting that genuinely must be set by hand, and Sony bodies refuse
    aperture and shutter over PTP unless it is on M.
 
+5. **Surviving an interruption is three separate problems**, and solving
+   only the first leaves the other two silent:
+
+     - *The link.*  The PTP session dies when idle and after roughly one
+       capture.  `_reopen` handles that.  What it cannot handle is a body
+       whose volatile buffer is holding a frame from a failed capture:
+       libgphoto2's own source says *"Camera on-off does not delete RAM.
+       Just USB reconnection helps."*  So the deepest recovery tier here
+       is a USB re-enumeration, not a reconnect and not a power cycle --
+       and a power cycle is specifically the thing that does not work.
+     - *The frames.*  See `_resolve_staging_root`: the staging area used
+       to be `/tmp`, which under `PrivateTmp=yes` is a tmpfs the service
+       owns and `Restart=always` destroys.
+     - *The optics.*  A power cycle -- a battery swap, a flat cell, a
+       knocked barrel -- resets the E PZ 16-50 to 16 mm.  Nothing about
+       capture notices, so the node goes on producing technically
+       excellent frames at the wrong magnification, and the DPI and
+       distortion calibration are quietly void.  Every frame's focal
+       length is checked against the calibrated one for this reason.
+
 On the camera itself: USB Connection -> PC Remote, Auto Review -> Off,
-mode dial -> M, Pre-AF -> Off, Focus -> DMF.
+mode dial -> M, Pre-AF -> Off, **Focus -> MF** (not DMF), and **a card in
+the body**.
+
+Two of those five deserve their reasons written down, because both were
+paid for:
+
+* **MF, not DMF.**  `camera_sony_capture()` skips its entire focus-wait
+  loop only when `FocusMode == 1`, which is Manual; DMF is not 1, so DMF
+  re-enters the wait and costs up to a second a frame.  Worse, DMF holds
+  an AF interlock that refuses the shutter outright -- recorded in
+  `exposure-and-lighting.md` §3 as a capture that never happened.  Older
+  advice recommending DMF (BYU's `a6000_ros`, 2018) was written against
+  libgphoto2 2.5.21, where the focus wait ran unconditionally and capped
+  at 1 s, so DMF cost nearly nothing.  On a current stack it is a
+  liability.
+* **A card in the body.**  Not for storage -- `capturetarget` is absent,
+  nothing is written to it, and in PC Remote the card is not even visible
+  over PTP.  It is what makes the body capture reliably at all.  See
+  `node-open-defects.md`; a night was spent proving it the hard way.
 """
 
 from __future__ import annotations
 
+import hashlib
 import math
+import os
 import pathlib
 import re
 import shutil
 import tempfile
 import time
+import urllib.parse
 
 from ...calib.exposure import parse_shutter
 
@@ -83,6 +135,8 @@ from .base import (
     CameraSettings,
     CapturedFile,
     ConfigUnsupported,
+    DuplicateFrame,
+    OpticalStateChanged,
     StagingFull,
 )
 
@@ -140,6 +194,100 @@ def same_setting(name: str, asked, got) -> bool:
     return str(asked).strip() == str(got).strip()
 
 
+#: Where staged frames go when nothing else is configured.  systemd gives
+#: the unit this directory via `StateDirectory=scanner`, which survives a
+#: restart; the path is the documented location for exactly that.
+DEFAULT_STAGING_ROOT = pathlib.Path("/var/lib/scanner/staging")
+
+
+def _resolve_staging_root() -> tuple[pathlib.Path, bool]:
+    """
+    Pick the staging directory.  Returns (path, volatile).
+
+    **Why this is not `tempfile.mkdtemp()` any more.**  The node runs under
+    a unit with `PrivateTmp=yes` and `Restart=always`.  `PrivateTmp` hands
+    the service its own tmpfs mounted at `/tmp`, torn down when the unit
+    stops -- so every staged frame lived somewhere a restart erases.
+    `Restart=always` then guarantees the restart eventually happens: a
+    crash, an OOM kill, a `systemctl restart`, a deploy, or a run of
+    reconnect failures.  Each one silently destroyed every frame the
+    orchestrator had not yet collected, and the node came back up
+    reporting a healthy, empty staging area with no indication that
+    anything had been in it.
+
+    That is the same failure shape as everything else this file argues
+    against: not a crash, but a machine that looks well while having lost
+    the work.
+
+    `volatile` is True when we could not get a persistent directory and
+    fell back to a temporary one.  It is reported rather than hidden,
+    because "your frames will not survive a restart" is something an
+    operator has to be able to read off `/status` rather than discover.
+    """
+    configured = os.environ.get("SCANNER_STAGING_DIR")
+    candidates = [pathlib.Path(configured)] if configured else [DEFAULT_STAGING_ROOT]
+    for root in candidates:
+        try:
+            root.mkdir(parents=True, exist_ok=True)
+            probe = root / ".writable"
+            probe.write_bytes(b"")
+            probe.unlink(missing_ok=True)
+        except OSError:
+            continue
+        return root, False
+    return pathlib.Path(tempfile.mkdtemp(prefix="scanner-staging-")), True
+
+
+#: Shutter values that are a mode, not an exposure.
+_NON_EXPOSURE_SHUTTERS = {"bulb", "auto", "unknown", "time", "--", ""}
+
+
+def plausible_setting(name: str, value) -> bool:
+    """
+    Is this a setting, or is it the body saying "not ready"?
+
+    A Sony that has not finished waking answers the config tree with
+    placeholders rather than refusing: **ISO 0, f-number 0, shutter
+    "Bulb"**.  None of those is an exposure any camera can be at, and each
+    one poisons a different consumer:
+
+    * `parse_shutter("Bulb")` raises, so /meter's fallback path dies,
+    * `ev100()` refuses a zero aperture for the same reason arithmetic
+      does,
+    * and /status goes on describing a camera that cannot exist.
+
+    Measured on scanner-node-0, 2026-08-12.  The body was still coming up
+    when the node connected; `_adopt_body_settings()` read
+    `iso=0, shutterspeed=Bulb, f-number=0` and wrote all three down as
+    fact.  /status served that exposure until a reconnect was forced.
+    GET /config, added in PR #7, is what made it visible:
+
+        read_from_body: {"iso": "200", "shutterspeed": "1/125", "f-number": "8"}
+        node_believes:  {"iso": "0",   "shutterspeed": "Bulb",  "f-number": "0"}
+
+    The body was correct the whole time.  Only the node was wrong, and it
+    was wrong in the direction that looks like data.
+    """
+    text = str(value).strip().lower()
+    if not text:
+        return False
+    if name == "shutterspeed":
+        if text in _NON_EXPOSURE_SHUTTERS:
+            return False
+        try:
+            return parse_shutter(value) > 0
+        except (ValueError, ZeroDivisionError, TypeError):
+            return False
+    try:
+        if name == "iso":
+            return float(text) > 0
+        if name == "f-number":
+            return _aperture_number(value) > 0
+    except (ValueError, TypeError):
+        return False
+    return True
+
+
 def gphoto2_available() -> bool:
     try:
         import gphoto2  # noqa: F401
@@ -157,6 +305,17 @@ class GPhotoCamera(CameraBackend):
     #: deliberately absent: it is read-only on Sony bodies.
     SETTING_KEYS = ("iso", "shutterspeed", "f-number")
 
+    #: Seconds to wait after a USB re-enumeration before touching the
+    #: device again.  Measured 2026-08-12: 2 s was not enough and a
+    #: connect ~18 s later still failed, while the CLI succeeded about a
+    #: minute in.  This is the last recovery tier; patience is cheap here.
+    USB_SETTLE_S = 8.0
+
+    #: Pause before re-reading a body that answered with placeholders.
+    #: One second: long enough for a waking ILCE-6000 to settle, short
+    #: enough that connect() does not feel hung.
+    ADOPT_RETRY_S = 1.0
+
     def __init__(self, camera_id: str = "cam0", tile_index: int = 0,
                  *, keep_on_camera: bool | None = None,
                  session_per_capture: bool = True):
@@ -169,16 +328,31 @@ class GPhotoCamera(CameraBackend):
         #: fails. See `ptp-session-lifetime.md`. Set False only to
         #: reproduce that.
         self.session_per_capture = session_per_capture
-        #: Frames downloaded during capture, keyed by file_id. Needed
-        #: because a body with no card keeps the frame in volatile storage
-        #: tied to the session -- close the session and it is gone, so a
-        #: deferred read_file() would find nothing.
+        #: Frames downloaded during capture, keyed by file_id, in capture
+        #: order (a plain dict preserves it, and the cap evicts from the
+        #: front). Needed because a body with no card keeps the frame in
+        #: volatile storage tied to the session -- close the session and it
+        #: is gone, so a deferred read_file() would find nothing.
         self._cache: dict[str, pathlib.Path] = {}
+        #: Where each file_id sits on the camera, for the keep_on_camera
+        #: case where there is no local copy to serve.
+        self._camera_path: dict[str, tuple[str, str]] = {}
         self._cache_dir: pathlib.Path | None = None
+        self.staging_volatile = True
+        #: SHA-256 of the previous frame's bytes. The stale-buffer and
+        #: same-CameraFilePath hazards both show up here as an exact
+        #: repeat; see `DuplicateFrame`.
+        self._last_digest: str | None = None
+        self._consecutive_session_losses = 0
         #: False when the config tree could not be read at all.  Without
         #: this, "probe failed" and "body supports nothing" are the same
         #: empty dict, and the more serious diagnosis loses.
         self._probe_ok = False
+        #: True once a PTP session has opened successfully in this process.
+        #: It changes which cause `_nothing_on_the_bus()` names first, and
+        #: nothing else -- a body that has answered once has a working cable
+        #: by demonstration, so the cable is the wrong first suspect.
+        self._ever_opened = False
         #: None means "decide from what the body supports" -- the only
         #: safe default, because leaving frames on a body that has no card
         #: target fills its volatile storage.  True/False force it.
@@ -192,10 +366,14 @@ class GPhotoCamera(CameraBackend):
         self.last_error = ""
         self._config_paths = self._probe_config()
         self._resolve_capture_target()
+        self._enforce_capture_prerequisites()
         self._adopt_body_settings()
         if self._cache_dir is None:
-            self._cache_dir = pathlib.Path(
-                tempfile.mkdtemp(prefix=f"scanner-{self.camera_id}-"))
+            root, volatile = _resolve_staging_root()
+            self._cache_dir = root / self.camera_id
+            self._cache_dir.mkdir(parents=True, exist_ok=True)
+            self.staging_volatile = volatile
+            self._adopt_orphans()
 
     def read_settings(self) -> dict[str, str]:
         """
@@ -220,6 +398,88 @@ class GPhotoCamera(CameraBackend):
                 continue                      # unparseable: better silent than wrong
         return read
 
+    #: Settings the body must be in for the shutter to work at all, and
+    #: which are NOT exposure -- so they are enforced rather than adopted.
+    REQUIRED_MODES = (
+        ("focusmode", "Manual"),
+        ("capturemode", "Single Shot"),
+    )
+
+    def _enforce_capture_prerequisites(self) -> None:
+        """
+        Put the body into the two modes a copy stand requires, at connect.
+
+        These were inherited, not set -- "two settings nobody chose,
+        surviving from however the body was last left" -- and the backlog
+        called that cosmetic.  It is not.  Measured on scanner-node-0,
+        2026-08-12:
+
+            focusmode      Current: DMF
+            expprogram     Current: M
+            capturemode    Current: Single Shot
+
+        With DMF the body refused the shutter.  Every capture returned
+        `[-1] Unspecified error`, the PTP session died behind it, and the
+        `gphoto2` CLI failed identically -- so the node was exonerated and
+        the evening was spent on a link fault that was really an AF
+        interlock.  One PTP write of `focusmode=Manual` fixed it, and the
+        very next capture produced a 24,513,792-byte ARW.
+
+        Why DMF blocks: `camera_sony_capture()` skips its focus-wait loop
+        only when `FocusMode == 1` (Manual).  DMF is not 1, so it waits
+        for a focus lock that a manual-focus copy stand will never report.
+
+        Why enforce rather than warn: the setting is reachable from the
+        camera's own Fn menu, so anyone who touches the body can undo it
+        without knowing they have, and the failure that follows looks like
+        a broken cable rather than a wrong mode.  `expprogram` stays the
+        operator's job -- it is read-only over PTP and genuinely cannot be
+        set from here.
+
+        Drive mode is enforced for a second, independently-paid reason:
+        `first-node-build.md` records a drive mode left in *Continuous Low
+        Speed* overnight producing an hour of confusing double-exposures.
+        """
+        if not self._probe_ok:
+            return
+        problems: list[str] = []
+        for name, wanted in self.REQUIRED_MODES:
+            if not self.has_config(name):
+                if name not in self.unsupported_settings:
+                    self.unsupported_settings.append(name)
+                continue
+            try:
+                current = str(self._get_config(name)).strip()
+            except CameraError:
+                current = ""
+            if current == wanted:
+                continue
+            try:
+                self._set_config(name, wanted)
+            except CameraError as e:
+                problems.append(f"{name}: wanted {wanted!r}, {e}")
+                continue
+            # Read back.  A body that accepts a write and quietly ignores
+            # it is the failure this whole file keeps guarding against.
+            try:
+                got = str(self._get_config(name)).strip()
+            except CameraError:
+                got = ""
+            if got and got != wanted:
+                problems.append(
+                    f"{name}: asked {wanted!r}, body reports {got!r}"
+                )
+
+        if problems:
+            note = (
+                f"{self.camera_id}: could not set the modes capture depends on: "
+                + "; ".join(problems)
+                + ".  With focusmode anything but Manual the body waits for a "
+                "focus lock a copy stand will never give it, and every capture "
+                "fails with an error that looks like a link fault."
+            )
+            self.last_error = f"{self.last_error}; {note}" if self.last_error else note
+
     def _adopt_body_settings(self) -> None:
         """
         Take the body's actual exposure as the node's own, at connect.
@@ -236,12 +496,36 @@ class GPhotoCamera(CameraBackend):
         from fiction.
         """
         read = self.read_settings()
-        if not read:
+        usable = {k: v for k, v in read.items() if plausible_setting(k, v)}
+
+        # One retry, because the cause is a race rather than a fault: the
+        # body answers the config tree before it has finished waking, and
+        # is correct a moment later.  Retrying is cheaper than carrying a
+        # wrong exposure for the life of the session, and it is the
+        # difference between self-healing and needing a human to notice.
+        if read and not usable:
+            time.sleep(self.ADOPT_RETRY_S)
+            read = self.read_settings()
+            usable = {k: v for k, v in read.items() if plausible_setting(k, v)}
+
+        rejected = sorted(set(read) - set(usable))
+        if rejected:
+            note = (
+                f"{self.camera_id}: the body reported "
+                + ", ".join(f"{k}={read[k]!r}" for k in rejected)
+                + " at connect -- placeholders, not settings, from a body that "
+                "had not finished waking.  They were NOT adopted; /status keeps "
+                "the previous values.  GET /config to compare, POST /connect to "
+                "re-read."
+            )
+            self.last_error = f"{self.last_error}; {note}" if self.last_error else note
+
+        if not usable:
             return
         self.settings = self.settings.merged(
-            iso=int(read["iso"]) if "iso" in read else None,
-            shutter=read.get("shutterspeed"),
-            aperture=read.get("f-number"),
+            iso=int(float(usable["iso"])) if "iso" in usable else None,
+            shutter=usable.get("shutterspeed"),
+            aperture=usable.get("f-number"),
         )
 
     def _open_session(self) -> None:
@@ -271,12 +555,7 @@ class GPhotoCamera(CameraBackend):
             cam.init()
         except gp.GPhoto2Error as e:
             if e.code == gp.GP_ERROR_MODEL_NOT_FOUND:
-                raise CameraDisconnected(
-                    f"{self.camera_id}: no camera found.  Check the cable "
-                    f"carries data (charge-only micro-USB leads enumerate "
-                    f"nothing at all), and that the body is on and set to "
-                    f"PC Remote."
-                ) from e
+                raise CameraDisconnected(self._nothing_on_the_bus()) from e
             if e.code == gp.GP_ERROR_IO_USB_CLAIM:
                 raise CameraError(
                     f"{self.camera_id}: another process holds the USB device, "
@@ -288,9 +567,60 @@ class GPhotoCamera(CameraBackend):
                     f"  grants nothing.  Join plugdev instead:\n"
                     f"    sudo usermod -aG plugdev $USER   # then log in again"
                 ) from e
+            if e.code in self._session_lost_codes():
+                # Classified, not swallowed.  `_reopen()` failing this way
+                # used to raise a plain CameraError, which
+                # `capture_with_retry` does not catch -- so a wedged link
+                # produced one 503 and no recovery attempt at all, even
+                # though the tier that fixes it was sitting right there.
+                raise CameraDisconnected(
+                    f"{self.camera_id}: cannot open a session: {e}.  The link "
+                    f"is wedged rather than merely idle; a reconnect will not "
+                    f"clear it and neither will power-cycling the body.  Only "
+                    f"a USB re-enumeration does."
+                ) from e
             raise CameraError(f"{self.camera_id}: {e}") from e
 
         self._camera = cam
+        self._ever_opened = True
+
+    def _nothing_on_the_bus(self) -> str:
+        """
+        `GP_ERROR_MODEL_NOT_FOUND` means the device is not enumerated. Every
+        cause looks identical from here, so the only useful thing the message
+        can do is put the *likely* one first -- and which is likely depends
+        entirely on whether this body has ever answered us.
+
+        Never answered -> it is a setup fault. A charge-only lead is the
+        classic one, and it enumerates nothing at all, which is exactly this
+        error.
+
+        Answered, then vanished -> it is almost always the battery. The
+        A6000 does not warn a tethered host before it shuts down; the device
+        simply stops existing. `2026-08-12`: the body went from serving
+        24.5 MB frames to `no camera found` between two commands, and the
+        message led with "check the cable" -- advice that sends an operator
+        to the one thing that was fine.
+
+        Naming the wrong cause first is not a cosmetic failure. It is the
+        difference between a thirty-second fix and taking the rig apart.
+        """
+        head = f"{self.camera_id}: no camera found -- nothing is enumerated on the bus."
+        battery = (
+            "A flat battery is the usual cause on a body that was working: "
+            "the A6000 gives a tethered host no warning, it just leaves the "
+            "bus.  Swap the cell, switch the body on, confirm PC Remote."
+        )
+        cable = (
+            "Check the cable carries data -- charge-only micro-USB leads "
+            "enumerate nothing at all, which is this exact error -- and that "
+            "the body is on and set to PC Remote."
+        )
+        if getattr(self, "_ever_opened", False):
+            # It worked, then stopped.  Battery first, and say why the
+            # ordering changed so nobody reads it as a guess.
+            return f"{head}  It was answering earlier this run.  {battery}  {cable}"
+        return f"{head}  {cable}  {battery}"
 
     def _reopen(self) -> None:
         """
@@ -304,6 +634,7 @@ class GPhotoCamera(CameraBackend):
             pass
         self._open_session()
         self._config_paths, self._probe_ok = paths, ok
+        self.session_reopens += 1
 
     def disconnect(self) -> None:
         if self._camera is not None:
@@ -527,6 +858,14 @@ class GPhotoCamera(CameraBackend):
             getattr(gp, "GP_ERROR_IO", -7),
             getattr(gp, "GP_ERROR_IO_USB_FIND", -52),
             getattr(gp, "GP_ERROR", -1),
+            # -10, GP_ERROR_TIMEOUT.  Measured on scanner-node-0,
+            # 2026-08-12: after ~7 hours idle the body stopped answering
+            # and every path -- init, capture, preview, and the gphoto2
+            # CLI alike -- returned "[-10] Timeout reading from or writing
+            # to the port".  It was absent from this tuple, so the one
+            # failure that actually occurs on a wedged link was classified
+            # as a generic CameraError and no retry ever fired.
+            getattr(gp, "GP_ERROR_TIMEOUT", -10),
         )
 
     def staging_free_bytes(self) -> int:
@@ -536,6 +875,85 @@ class GPhotoCamera(CameraBackend):
             return shutil.disk_usage(self._cache_dir).free
         except OSError:
             return -1
+
+    # -- staged frames -----------------------------------------------------
+
+    @staticmethod
+    def _stage_name(seq: int, frame_index: int, file_id: str) -> str:
+        """
+        On-disk name for a staged frame, from which the file_id is
+        recoverable without a sidecar to keep in sync.
+
+        The seq/frame prefix makes the directory sort into capture order,
+        which is what the LRU cap needs after a restart -- the mtimes are
+        all within a second of each other and are not a reliable order.
+        """
+        return f"{seq:06d}-{frame_index}-{urllib.parse.quote(file_id, safe='')}"
+
+    @staticmethod
+    def _file_id_from_stage_name(name: str) -> str | None:
+        parts = name.split("-", 2)
+        if len(parts) != 3:
+            return None
+        try:
+            int(parts[0]), int(parts[1])
+        except ValueError:
+            return None
+        return urllib.parse.unquote(parts[2])
+
+    def _adopt_orphans(self) -> None:
+        """
+        Take ownership of frames left by a previous run of this process.
+
+        The point of a persistent staging directory is that a restart does
+        not destroy uncollected frames.  That only holds if the new process
+        can still *find* them -- otherwise they are merely leaked rather
+        than lost, which is worse: the disk fills and nothing accounts for
+        it.
+        """
+        if self._cache_dir is None:
+            return
+        try:
+            names = sorted(p.name for p in self._cache_dir.iterdir() if p.is_file())
+        except OSError:
+            return
+        for name in names:
+            fid = self._file_id_from_stage_name(name)
+            if fid is None or fid in self._cache:
+                continue
+            self._cache[fid] = self._cache_dir / name
+            self.frames_recovered += 1
+
+    def staged_frames(self) -> list[str]:
+        return list(self._cache)
+
+    def release_file(self, file_id: str) -> bool:
+        existed = file_id in self._cache
+        path = self._cache.pop(file_id, None)
+        self._camera_path.pop(file_id, None)
+        if path is not None:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+        return existed
+
+    def release_cache(self) -> None:
+        """
+        Drop every staged frame, keeping the staging area usable.
+
+        It previously did `shutil.rmtree(self._cache_dir)` and set
+        `_cache_dir = None`, which made it a one-shot: after it ran,
+        `staging_free_bytes()` reported -1 so the preflight went silent,
+        and `_shoot` skipped caching entirely because `_cache_dir is None`
+        -- so the next capture downloaded a frame, stored it nowhere, and
+        `read_file` then went back to a camera whose session no longer held
+        it.  Calling the one method that frees space was the way to start
+        losing frames.  It never bit because nothing called it.
+        """
+        for fid in list(self._cache):
+            self.release_file(fid)
+        self._last_digest = None
 
     def capture(self, seq: int, frames: int = 1) -> list[CapturedFile]:
         self._require()
@@ -563,7 +981,33 @@ class GPhotoCamera(CameraBackend):
                 ) from e
             raise CameraError(f"{self.camera_id}: capture failed: {e}") from e
 
-        fid = f"{path.folder.rstrip('/')}/{path.name}"
+        camera_path = f"{path.folder.rstrip('/')}/{path.name}"
+        # The camera-side name is not a safe identity, so the node mints
+        # its own.
+        #
+        # Measured both ways, and the second measurement corrected the
+        # first.  `first-light-measurements.md` recorded
+        # `/capt_DSC00001.ARW`, and this comment used to reason from that
+        # single observation that the body restarts its numbering every
+        # session -- so every frame of a run would arrive with the same
+        # name.  Ten consecutive captures on scanner-node-0, 2026-08-12,
+        # say otherwise: `capt_DSC00794.ARW` through `capt_DSC00803.ARW`,
+        # incrementing across ten separate PTP sessions.  DSC00001 was
+        # simply the first frame the body had ever taken.
+        #
+        # So the collision is latent rather than live -- which is worth
+        # saying plainly, because a fix justified by a bug that is not
+        # happening invites someone to revert it.  What makes the
+        # camera-side name unsafe is that its uniqueness is a *body
+        # setting*, not a property: Sony's File Number can be set to
+        # Reset instead of Series, a new or formatted card restarts the
+        # counter, and it wraps at 9999.  Any of those would silently
+        # collapse two frames onto one id, and the failure would be a
+        # book with a page served twice.
+        #
+        # A node-minted id does not depend on the camera behaving.  The
+        # sequence is ours and is unique by construction.
+        fid = f"{self.camera_id}/{seq:06d}/{frame_index}/{path.name}"
         try:
             info = cam.file_get_info(path.folder, path.name)
             size = int(info.file.size)
@@ -581,8 +1025,16 @@ class GPhotoCamera(CameraBackend):
             data = self._download(path.folder, path.name)
             size = len(data)
             self._peak_frame_bytes = max(self._peak_frame_bytes, size)
+
+            # Before anything is written or counted.  A duplicate is not a
+            # frame we happen to already have -- it is evidence that this
+            # capture did not produce a new image, and everything after
+            # this point would launder it into one.
+            self._check_not_duplicate(data)
+            self._check_optical_state(data)
+
             if self._cache_dir is not None:
-                dest = self._cache_dir / f"{seq:06d}-{frame_index}-{path.name}"
+                dest = self._cache_dir / self._stage_name(seq, frame_index, fid)
                 try:
                     dest.write_bytes(data)
                 except OSError as e:
@@ -598,8 +1050,11 @@ class GPhotoCamera(CameraBackend):
                 cam.file_delete(path.folder, path.name)
             except Exception:  # noqa: BLE001
                 pass
+        else:
+            self._camera_path[fid] = (path.folder, path.name)
 
         self.frames_captured += 1
+        self.enforce_frame_cap()
         return CapturedFile(
             file_id=fid,
             camera_id=self.camera_id,
@@ -607,8 +1062,60 @@ class GPhotoCamera(CameraBackend):
             frame_index=frame_index,
             size_bytes=size,
             latency_s=round(time.perf_counter() - t0, 3),
-            path=fid,
+            path=camera_path,
         )
+
+    def _check_not_duplicate(self, data: bytes) -> None:
+        digest = hashlib.sha256(data).hexdigest()
+        if self._last_digest is not None and digest == self._last_digest:
+            # Do not keep the digest of a frame we are rejecting: the next
+            # capture must be compared against the last frame the node
+            # actually accepted, or one stale frame poisons every retry.
+            raise DuplicateFrame(
+                f"{self.camera_id}: this frame is byte-identical to the previous "
+                f"one (sha256 {digest[:12]}).  On a real sensor that cannot "
+                f"happen -- noise alone makes every frame unique -- so the body "
+                f"almost certainly served a frame left in its volatile buffer by "
+                f"an earlier failed capture.  A power cycle does NOT clear it; "
+                f"only a USB re-enumeration does.  The frame was not staged and "
+                f"frames_captured was not advanced."
+            )
+        self._last_digest = digest
+
+    def _check_optical_state(self, data: bytes) -> None:
+        """
+        Notice that the lens moved, from the frame we already have.
+
+        Costs one EXIF tag on a file that was being parsed anyway, and
+        catches the single most expensive silent failure available to this
+        rig: a power cycle resetting the E PZ 16-50 to 16 mm, after which
+        every frame is well exposed, sharp, correctly named -- and at the
+        wrong magnification, with the DPI and distortion calibration void.
+        """
+        from ...calib.exposure import read_exif_exposure
+
+        try:
+            focal = read_exif_exposure(data).get("focal_length_mm", 0.0)
+        except Exception:  # noqa: BLE001
+            return
+        if not focal:
+            return
+        self.focal_length_mm = focal
+        want = self.expected_focal_length_mm
+        if not want:
+            return
+        # A tenth of a millimetre: far tighter than any real zoom step,
+        # loose enough for the rational-to-float rounding in EXIF.
+        if abs(focal - want) > 0.1:
+            self.optical_alarm = (
+                f"{self.camera_id}: focal length is {focal:g} mm, calibrated at "
+                f"{want:g} mm.  The lens has moved since calibration -- on the "
+                f"E PZ 16-50 this is what a power cycle does, and it resets to "
+                f"16 mm.  Magnification, DPI and the distortion profile are all "
+                f"void until the zoom is restored and the rig re-calibrated."
+            )
+            raise OpticalStateChanged(self.optical_alarm)
+        self.optical_alarm = ""
 
     def _download(self, folder: str, name: str) -> bytes:
         cam, gp = self._require()
@@ -622,12 +1129,26 @@ class GPhotoCamera(CameraBackend):
     def read_file(self, file_id: str) -> bytes:
         # Frames pulled during capture are served from the local cache.
         # On a body with no card this is the only copy that still exists.
+        #
+        # Reading does NOT release.  A GET that consumes would make a
+        # retried request after a network timeout destroy a page silently,
+        # and would put the only copy of a frame at the mercy of the
+        # flakiest part of the system.  Releasing is a thing the
+        # orchestrator asks for -- DELETE /files/<id> -- never a side
+        # effect of looking.
         cached = self._cache.get(file_id)
         if cached is not None and cached.exists():
             return cached.read_bytes()
 
         cam, gp = self._require()
-        folder, _, name = file_id.rpartition("/")
+        loc = self._camera_path.get(file_id)
+        if loc is None:
+            # Not staged and not on the camera: this id was released, or
+            # evicted by the cap, or belongs to a run whose staging was
+            # lost.  KeyError so the API answers 404 rather than blaming
+            # the camera for a 503.
+            raise KeyError(file_id)
+        folder, name = loc
         data = self._download(folder, name)
         if not self.keep_on_camera:
             try:
@@ -636,17 +1157,139 @@ class GPhotoCamera(CameraBackend):
                 pass
         return data
 
-    def release_cache(self) -> None:
-        """Drop cached frames once the orchestrator has taken them."""
-        for p in self._cache.values():
+    # -- deep recovery -----------------------------------------------------
+
+    def sony_on_bus(self) -> bool | None:
+        """
+        Is a Sony device enumerated at all?  None when we cannot tell.
+
+        This is the one question that separates "the body is wedged" from
+        "the body is not there", and the two need opposite advice.  A
+        wedged body must not be power-cycled -- that does not clear its
+        buffer and it resets a taped zoom to 16 mm.  A body that has left
+        the bus, because its battery went flat, can only be fixed *by*
+        powering it.  Guessing wrong costs an operator either a calibration
+        or an hour.
+        """
+        try:
+            devices = sorted(pathlib.Path("/sys/bus/usb/devices").iterdir())
+        except OSError:
+            return None
+        for dev in devices:
             try:
-                p.unlink(missing_ok=True)
+                if (dev / "idVendor").read_text().strip().lower() == "054c":
+                    return True
+            except OSError:
+                continue
+        return False
+
+    def usb_reset(self) -> bool:
+        """
+        Re-enumerate the camera on the USB bus.  True if a device was reset.
+
+        The recovery tier below `reconnect()`, and the only one that clears
+        a frame stuck in the body's volatile buffer.  libgphoto2's own
+        comment is the authority: *"Camera on-off does not delete RAM.
+        Just USB reconnection helps."*  So when a `DuplicateFrame` fires,
+        telling the operator to power-cycle the body is advice that cannot
+        work; this is what does.
+
+        Uses `USBDEVFS_RESET` on the device node, which needs write access
+        to `/dev/bus/usb/BBB/DDD`.  The provisioner's udev rule already
+        grants that to `plugdev`, which the unit joins -- so this works
+        unprivileged on a provisioned node and quietly returns False
+        anywhere else rather than pretending it succeeded.
+        """
+        import fcntl
+
+        USBDEVFS_RESET = ord("U") << 8 | 20  # _IO('U', 20)
+        reset_any = False
+        try:
+            devices = sorted(pathlib.Path("/sys/bus/usb/devices").iterdir())
+        except OSError:
+            return False
+        for dev in devices:
+            try:
+                if (dev / "idVendor").read_text().strip().lower() != "054c":
+                    continue
+                busnum = int((dev / "busnum").read_text())
+                devnum = int((dev / "devnum").read_text())
+            except (OSError, ValueError):
+                continue
+            node = pathlib.Path(f"/dev/bus/usb/{busnum:03d}/{devnum:03d}")
+            try:
+                fd = os.open(node, os.O_WRONLY)
+            except OSError:
+                continue
+            try:
+                fcntl.ioctl(fd, USBDEVFS_RESET, 0)
+                reset_any = True
+            except OSError:
+                pass
+            finally:
+                os.close(fd)
+        if reset_any:
+            self.usb_resets += 1
+            # The handle refers to a device that has just gone away and
+            # come back with a new address.  Anything still holding it will
+            # fail in a way that reads like a different fault.
+            try:
+                self.disconnect()
             except Exception:  # noqa: BLE001
                 pass
-        self._cache.clear()
-        if self._cache_dir is not None:
-            shutil.rmtree(self._cache_dir, ignore_errors=True)
-            self._cache_dir = None
+            time.sleep(self.USB_SETTLE_S)
+        return reset_any
+
+    def recover(self) -> None:
+        """
+        Escalate: reopen the session, then re-enumerate the bus.
+
+        `reconnect()` alone is the right first move and is usually enough
+        for an idle session.  It cannot help a *wedged* link, because the
+        thing that times out is `cam.init()` itself -- measured on
+        `scanner-node-0`, 2026-08-12, where a full `systemctl restart`
+        left the fault exactly where it was and the `gphoto2` CLI failed
+        identically.  A fresh process does not clear a wedge; only a bus
+        re-enumeration does.
+
+        The reset is deliberately patient afterwards.  The device
+        re-enumerates and is not ready the instant the ioctl returns: on
+        12 Aug a connect roughly 18 s after the reset still failed, while
+        the same command a minute later succeeded twice.  Being slow here
+        costs one recovery; being hasty costs the node.
+        """
+        try:
+            self.reconnect()
+            return
+        except CameraError:
+            pass
+        if self.usb_reset():
+            # Longer backoff than the ordinary reconnect: the bus has just
+            # dropped and re-added the device, so the first two attempts
+            # are expected to fail and should not exhaust the budget.
+            self.reconnect(attempts=5, backoff_s=1.0)
+            return
+        if self.sony_on_bus() is False:
+            # Nothing to re-enumerate, so the advice below would be actively
+            # wrong: it forbids the only action that can help.
+            raise CameraDisconnected(
+                f"{self.camera_id}: reconnect failed and there is no Sony "
+                f"device on the USB bus at all, so there was nothing to "
+                f"re-enumerate.  The body has left the bus rather than "
+                f"wedged -- a flat battery is the usual reason, and the "
+                f"A6000 gives a tethered host no warning.  Swap the cell, "
+                f"switch the body on, confirm PC Remote.  Then check the "
+                f"cable: a charge-only lead looks exactly like this from "
+                f"here.  (Expect the E PZ 16-50 to come back at 16 mm.)"
+            )
+        raise CameraDisconnected(
+            f"{self.camera_id}: reconnect failed and a USB re-enumeration did "
+            f"not help.  Pull the cable and put it back -- do not power-cycle "
+            f"the body; that does not clear its buffer and it resets a taped "
+            f"zoom to 16 mm.  If captures fail while reads succeed, check the "
+            f"card is seated: a cardless body answers config queries and then "
+            f"times out on the shutter."
+        )
 
     def preview(self) -> bytes:
         cam, gp = self._require()
@@ -654,4 +1297,8 @@ class GPhotoCamera(CameraBackend):
             cam_file = cam.capture_preview()
             return memoryview(cam_file.get_data_and_size()).tobytes()
         except gp.GPhoto2Error as e:
+            if e.code in self._session_lost_codes():
+                raise CameraDisconnected(
+                    f"{self.camera_id}: session lost during preview: {e}"
+                ) from e
             raise CameraError(f"{self.camera_id}: preview failed: {e}") from e
